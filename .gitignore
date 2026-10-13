@@ -1,0 +1,11 @@
+# Vendor artifacts: copyrighted binaries, kept locally; SHA-256s in
+# docs/analysis/findings.md. Re-extract with the recipes in findings.md.
+extract/
+*.pkg
+*.exe
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/

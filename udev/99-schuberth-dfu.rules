@@ -1,0 +1,3 @@
+# SCHUBERTH/SENA headsets in DFU mode (VID 0x092B = Airoha Technology).
+# Install as /etc/udev/rules.d/99-schuberth-dfu.rules and plug in the device.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="092b", MODE="0660", GROUP="plugdev"

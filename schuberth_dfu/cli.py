@@ -1,0 +1,222 @@
+"""schuberth-dfu command line interface."""
+from __future__ import annotations
+
+import argparse
+import sys
+import urllib.request
+
+from . import USB_VID
+from .catalog import family_for_pid, product_for_pid
+from .container import ContainerError, parse_sena_container, is_qcc_appu
+from .manifest import (BASE_URL, FIRMWARE_MANIFEST, REVISIONS_MANIFEST,
+                       download_url, fetch_manifest, latest)
+
+
+def cmd_detect(args) -> int:
+    from .transport import scan  # lazy: hidapi only needed for hardware
+    devices = scan()
+    if not devices:
+        print(f"No supported headsets found (looking for VID {USB_VID:#06x}).")
+        print("Note: DFU mode may require the device to be in its update "
+              "state; see README.")
+        return 1
+    for d in devices:
+        fam = family_for_pid(d.product_id) or "unsupported"
+        print(f"{d.product_name:16} PID {d.product_id:#06x}  family={fam:8} "
+              f"serial={d.serial_number or '-'}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    entries = fetch_manifest(FIRMWARE_MANIFEST)
+    entry = latest(entries, args.product)
+    if entry is None:
+        print(f"No firmware for product {args.product!r} in the manifest.")
+        print("Known products:",
+              ", ".join(sorted({e.product for e in entries}))[:2000])
+        return 1
+    print(f"{entry.product}: latest {entry.version}")
+    print(f"  file: {entry.filename}")
+    print(f"  url:  {download_url(entry)}")
+    if args.all_revisions:
+        revs = fetch_manifest(REVISIONS_MANIFEST)
+        for e in revs:
+            if e.product == entry.product and e.language is None:
+                print(f"  rev {e.version}: {e.filename}")
+    return 0
+
+
+def cmd_download(args) -> int:
+    entries = fetch_manifest(FIRMWARE_MANIFEST)
+    entry = latest(entries, args.product)
+    if entry is None:
+        print(f"No firmware for product {args.product!r}.")
+        return 1
+    url = download_url(entry)
+    print(f"downloading {url}")
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        data = resp.read()
+    out = args.output or entry.filename
+    try:
+        if is_qcc_appu(data):
+            print("warning: Qualcomm APPUHDRV5 container, not supported yet")
+        container = parse_sena_container(data)
+    except ContainerError as exc:
+        print(f"container parse failed: {exc}")
+        return 1
+    print(f"container {container.version} device_id={container.device_id:#06x} "
+          f"images={len(container.images)} names={container.names}")
+    for i, img in enumerate(container.images):
+        ok = img.verify(data)
+        print(f"  img[{i}] type={img.type} size={img.size:#08x} "
+              f"md5={'OK' if ok else 'FAIL'} name={img.name or '-'}")
+        if not ok:
+            return 1
+    with open(out, "wb") as fh:
+        fh.write(data)
+    print(f"saved {out} ({len(data)} bytes, all MD5s verified)")
+    return 0
+
+
+def cmd_update(args) -> int:
+    from .transport import Handle, scan  # lazy: hidapi only for hardware
+    from .catalog import (FAMILY_AIROHA, FAMILY_CSR, family_for_pid)
+
+    devices = scan()
+    if not devices:
+        print("No supported headsets found.")
+        return 1
+    dev = devices[0]
+    fam = family_for_pid(dev.product_id)
+    print(f"device: {dev.product_name} PID {dev.product_id:#06x} family={fam}")
+
+    if args.image:
+        with open(args.image, "rb") as fh:
+            data = fh.read()
+    else:
+        import urllib.request
+        from .manifest import fetch_manifest, latest, download_url
+        entry = latest(fetch_manifest(), dev.product_name)
+        if entry is None:
+            print(f"No manifest entry for {dev.product_name!r}; "
+                  "pass --image.")
+            return 1
+        print(f"downloading {entry.filename}")
+        with urllib.request.urlopen(download_url(entry), timeout=60) as resp:
+            data = resp.read()
+
+    from .container import parse_sena_container
+    container = parse_sena_container(data)
+    if not container.verify_all(data):
+        print("container MD5 verification FAILED, refusing")
+        return 1
+    print(f"container {container.version}: "
+          + ", ".join(f"{i.name or i.type}" for i in container.images))
+
+    if fam not in (FAMILY_AIROHA, FAMILY_CSR):
+        print(f"family {fam!r} update flow not implemented")
+        return 2
+
+    if not args.yes:
+        print("Refusing to flash without --yes (flashing can brick the "
+              "device; keep it plugged in throughout).")
+        return 2
+
+    def log(msg: str) -> None:
+        print(msg, flush=True)
+
+    with Handle(dev) as handle:
+        if fam == FAMILY_CSR:
+            from .sc2flow import Sc2Error, update_sc2
+            try:
+                update_sc2(handle, container, data, log=log)
+            except Sc2Error as exc:
+                print(f"SC2 flow failed: {exc}")
+                return 1
+        else:
+            from .airodfu import AirohaError, Link, update_image
+            link = Link(handle)
+            try:
+                for img in container.images:
+                    log(f"writing {img.name or img.type} ({img.size} bytes)")
+                    update_image(link, data, img,
+                                 progress=lambda d, t: print(
+                                     f"\r {d * 100 // t}%", end="", flush=True),
+                                 log=log)
+                print()
+            except AirohaError as exc:
+                print(f"\nAiroha flow failed: {exc}")
+                return 1
+    log("update complete")
+    return 0
+
+
+def cmd_selftest(args) -> int:
+    """Exercise both update flows against simulated devices (no hardware)."""
+    import os
+    from .container import parse_sena_container
+    from .sim import FakeAiroha, FakeSc2, build_container
+
+    blobs = [os.urandom(4000), os.urandom(700)]
+    data = build_container(blobs=blobs)
+    container = parse_sena_container(data)
+    assert container.verify_all(data)
+    print(f"container: {len(container.images)} images, MD5s OK")
+
+    print("airoha flow (transport A, 58B chunks + CRC16):")
+    dev = FakeAiroha()
+    from .airodfu import Link, update_image
+    link = Link(dev, poll_interval=0, timeout=2)
+    for img in container.images:
+        update_image(link, data, img,
+                     progress=lambda d, t: print(f"\r  {d*100//t}%",
+                                                 end="", flush=True))
+    print()
+    assert bytes(dev.written) == b"".join(blobs), "airoha sim data mismatch"
+    print("  OK: all bytes + CRCs verified, VERIFY/GET_DFU_RESULT sent")
+
+    print("sc2 flow (transports B+C, 61B chunks, Find Mesh):")
+    normal, mesh = FakeSc2(), FakeSc2(busy_once=True)
+    from .sc2flow import update_sc2
+    update_sc2(normal, container, data,
+               log=lambda s: print(f"  [{s}]") if "Mesh" in s or "version" in s else None,
+               mesh_opener=lambda: mesh)
+    assert mesh.chunks == b"".join(blobs), "sc2 sim data mismatch"
+    print("  OK: all bytes transferred, busy-retry handled")
+    print("selftest passed — protocol layers work; hardware validation "
+          "still pending (ticket 06)")
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="schuberth-dfu",
+                                 description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("detect", help="list connected supported headsets")
+
+    p = sub.add_parser("check", help="show latest firmware for a product")
+    p.add_argument("product", help="internal product name, e.g. SC2")
+    p.add_argument("--all-revisions", action="store_true")
+
+    p = sub.add_parser("download", help="download+verify latest firmware")
+    p.add_argument("product")
+    p.add_argument("-o", "--output")
+
+    p = sub.add_parser("update", help="update a connected device")
+    p.add_argument("--image", help="previously downloaded .img file")
+    p.add_argument("--yes", action="store_true",
+                   help="confirm flashing (required)")
+
+    sub.add_parser("selftest",
+                   help="run the update flows against simulated devices")
+
+    handlers = {"detect": cmd_detect, "check": cmd_check,
+                "download": cmd_download, "update": cmd_update,
+                "selftest": cmd_selftest}
+    args = ap.parse_args(argv)
+    return handlers[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

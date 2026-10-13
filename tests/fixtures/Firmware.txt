@@ -1,0 +1,14 @@
+SENA
+SC2:v1.5:SC2-v1.5-build0.img
+SC2:1
+SC2V2:v2.4:SC2-v2.4-build0.img
+SC2V2:1
+SC2Standard:v1.1:SC2_Standard-v1.1.1-build0.img
+SC2Standard:1
+AIROHAST1:v2.5:SPIDER_ST1-v2.5.3-build0.img
+AIROHAST1:3
+SRLMesh:v1.7:English:SRL-Mesh-v1.7.1-build0.img
+SRLMesh:v1.7:German:SRL-Mesh-v1.7.1-build0.img
+SRLMesh:1
+QCC5S:v2.3:5S-v2.3.2-build1.img
+QCC5S:2
