@@ -17,3 +17,19 @@ Wire everything into `schuberth-dfu update`:
   confirmation. All paths exercised offline via fake devices; the live
   hardware leg (report ids, busy timing, Find Mesh re-enumeration) is the
   remaining work.
+
+## Hardware validation checklist (first run, SC2)
+
+1. `sudo cp udev/99-schuberth-dfu.rules /etc/udev/rules.d/ && sudo udevadm control --reload`, replug
+2. Terminal A: `dmesg -w`; terminal B: `watch -n1 lsusb -d 092b:`
+3. `schuberth-dfu detect` → expect `SC2 PID 0x3170 family=csr`
+4. `schuberth-dfu check SC2 && schuberth-dfu download SC2 -o sc2.img`
+5. `schuberth-dfu update --image sc2.img --yes`
+   - up-to-date device → expect `VERSION IS SAME ... UPDATE SKIP` (safe first run)
+   - watch terminal B during the flow: confirms the DFU-mode PID guess
+     (0x3160/0x3220/0x6501/0x6511)
+6. Triage: detect empty → udev/permissions; version query timeout →
+   report-id mismatch (probe with hidapitest/hidrd); Find Mesh timeout →
+   lsusb shows the real DFU PID, update DFU_MESH_PIDS; write ack errors →
+   chunk/CRC semantics
+7. Record results here + findings.md
