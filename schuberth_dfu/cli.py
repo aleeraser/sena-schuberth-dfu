@@ -129,7 +129,8 @@ def cmd_update(args) -> int:
         if fam == FAMILY_CSR:
             from .sc2flow import Sc2Error, update_sc2
             try:
-                update_sc2(handle, container, data, log=log)
+                update_sc2(handle, container, data, log=log,
+                           force=args.force)
             except Sc2Error as exc:
                 print(f"SC2 flow failed: {exc}")
                 return 1
@@ -207,6 +208,8 @@ def main(argv=None) -> int:
     p.add_argument("--image", help="previously downloaded .img file")
     p.add_argument("--yes", action="store_true",
                    help="confirm flashing (required)")
+    p.add_argument("--force", action="store_true",
+                   help="flash even if versions match")
 
     sub.add_parser("selftest",
                    help="run the update flows against simulated devices")

@@ -3,7 +3,8 @@ import os
 from schuberth_dfu.container import parse_sena_container
 from schuberth_dfu.sc2flow import (CMD_NOP, CMD_REBOOT, CMD_RV, CMD_RUNLOADER,
                                    CMD_START, CMD_VERSION, CMD_WRITE,
-                                   MeshLink, update_image, update_sc2)
+                                   MeshLink, parse_container_version,
+                                   update_image, update_sc2)
 from schuberth_dfu.sim import FakeSc2, build_container
 
 
@@ -55,6 +56,30 @@ def test_find_mesh_handle_accepts_dfu_pids(monkeypatch):
     h = sc2flow.find_mesh_handle(retries=1, delay=0, opener=lambda d: marker)
     assert h is marker
     assert 0x3160 in seen["extra"]
+
+
+def test_parse_container_version():
+    assert parse_container_version("v1.5-build0") == (1, 5, 0, 0)
+    assert parse_container_version("v2.5.3-build0") == (2, 5, 3, 0)
+
+
+def test_update_sc2_skips_when_version_matches():
+    # FakeSc2 reports version (1,0,2,3); match the container to it.
+    data = build_container(version=b"v1.0.2.3-build0", blobs=[os.urandom(100)])
+    c = parse_sena_container(data)
+    normal, mesh = FakeSc2(), FakeSc2()
+    assert update_sc2(normal, c, data, mesh_opener=lambda: mesh) is False
+    assert normal.cmds == [("B", CMD_VERSION)]  # version query only
+    assert mesh.cmds == []
+
+
+def test_update_sc2_force_overrides_skip():
+    data = build_container(version=b"v1.0.2.3-build0", blobs=[os.urandom(100)])
+    c = parse_sena_container(data)
+    normal, mesh = FakeSc2(), FakeSc2()
+    assert update_sc2(normal, c, data, mesh_opener=lambda: mesh,
+                      force=True) is True
+    assert mesh.chunks  # data was written
 
 
 def test_update_sc2_full_flow():

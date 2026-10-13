@@ -113,6 +113,17 @@ def read_version(link: MeshLink) -> tuple:
     return tuple(rep[3:7])
 
 
+def parse_container_version(version: str) -> tuple:
+    """'v1.5-build0' -> (1, 5, 0, 0): the 4-tuple the device reports.
+
+    The macOS app compares these and logs "VERSION IS SAME ... UPDATE
+    SKIP"; we skip only on an exact 4-tuple match (conservative).
+    """
+    core = version.split("-", 1)[0].lstrip("vV")
+    parts = [int(p) for p in core.split(".") if p.isdigit()]
+    return tuple((parts + [0, 0, 0, 0])[:4])
+
+
 def update_image(link: MeshLink, data: bytes, image,
                  progress: Optional[Callable[[int, int], None]] = None) -> None:
     blob = image.blob(data)
@@ -125,15 +136,23 @@ def update_image(link: MeshLink, data: bytes, image,
 def update_sc2(handle: Handle, container: SENAContainer, data: bytes,
                images: Optional[List] = None,
                log: Optional[Callable[[str], None]] = None,
-               mesh_opener: Callable[[], Handle] = find_mesh_handle) -> None:
+               mesh_opener: Callable[[], Handle] = find_mesh_handle,
+               force: bool = False) -> bool:
     """Run the SC2 flow. `images` selects container images, in order;
     default = all, in container order (UNVERIFIED ordering assumption).
-    `mesh_opener` finds/opens the DFU interface (injectable for tests)."""
+    `mesh_opener` finds/opens the DFU interface (injectable for tests).
+    Returns False (nothing written) if the device already reports the
+    container's version, unless `force`."""
     log = log or (lambda s: None)
     link = MeshLink(handle)
 
     ver = read_version(link)
     log(f"device version: {'.'.join(map(str, ver))}")
+    target = parse_container_version(container.version)
+    if ver == target and not force:
+        log(f"VERSION IS SAME, {'.'.join(map(str, ver))} UPDATE SKIP")
+        return False
+    log(f"target version: {'.'.join(map(str, target))}")
     log("Qcc Mesh Update start")
     link.bulk(CMD_START)
 
@@ -163,3 +182,4 @@ def update_sc2(handle: Handle, container: SENAContainer, data: bytes,
     finally:
         mesh_handle.close()
     log("done")
+    return True
