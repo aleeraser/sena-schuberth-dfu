@@ -39,6 +39,24 @@ def test_write_chunking_61_bytes():
     assert dev.cmds.count(("C", CMD_WRITE)) == 4  # ceil(200/61)
 
 
+def test_find_mesh_handle_accepts_dfu_pids(monkeypatch):
+    from schuberth_dfu import sc2flow
+    from schuberth_dfu.transport import Device
+
+    seen = {}
+
+    def fake_scan(extra_pids=frozenset()):
+        seen["extra"] = extra_pids
+        return [Device(path=b"x", vendor_id=0x092B, product_id=0x3160,
+                       product_name="DFU-0x3160", serial_number="")]
+
+    monkeypatch.setattr(sc2flow, "scan", fake_scan)
+    marker = object()
+    h = sc2flow.find_mesh_handle(retries=1, delay=0, opener=lambda d: marker)
+    assert h is marker
+    assert 0x3160 in seen["extra"]
+
+
 def test_update_sc2_full_flow():
     blobs = [os.urandom(300), os.urandom(61)]
     data = build_container(blobs=blobs)

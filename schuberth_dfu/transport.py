@@ -45,20 +45,24 @@ def _hid():
     return hid
 
 
-def scan() -> List[Device]:
-    """Enumerate supported headsets currently plugged in."""
+def scan(extra_pids=frozenset()) -> List[Device]:
+    """Enumerate supported headsets currently plugged in.
+
+    `extra_pids` also accepts PIDs absent from the product catalog (e.g.
+    DFU-mode interfaces); they get a synthetic DFU-xxxx name.
+    """
     hid = _hid()
     known = catalog()
     found = []
     for info in hid.enumerate(USB_VID, 0):
         pid = info["product_id"]
-        if pid not in known:
+        if pid not in known and pid not in extra_pids:
             continue
         found.append(Device(
             path=info["path"],
             vendor_id=info["vendor_id"],
             product_id=pid,
-            product_name=known[pid],
+            product_name=known.get(pid, f"DFU-{pid:#06x}"),
             serial_number=info.get("serial_number") or "",
         ))
     return found

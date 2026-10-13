@@ -89,14 +89,19 @@ class MeshLink:
 
 
 def find_mesh_handle(*, retries: int = 20, delay: float = 1.0,
-                     log: Optional[Callable[[str], None]] = None) -> Handle:
-    """Poll for the DFU-mode interface (the app's 'Find Mesh' step)."""
+                     log: Optional[Callable[[str], None]] = None,
+                     opener: Callable = Handle) -> Handle:
+    """Poll for the DFU-mode interface (the app's 'Find Mesh' step).
+
+    DFU-mode PIDs are update interfaces, not catalog products, so scan()
+    is told to accept them explicitly.
+    """
     for i in range(retries):
-        for d in scan():
+        for d in scan(extra_pids=DFU_MESH_PIDS):
             if d.product_id in DFU_MESH_PIDS:
                 if log:
                     log(f"mesh DFU interface up: PID {d.product_id:#06x}")
-                return Handle(d)
+                return opener(d)
         if log:
             log(f"Find Mesh: retry {i + 1}/{retries}")
         time.sleep(delay)
