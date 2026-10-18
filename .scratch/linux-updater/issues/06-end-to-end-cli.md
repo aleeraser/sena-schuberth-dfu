@@ -39,3 +39,10 @@ Wire everything into `schuberth-dfu update`:
   v2.4), submesh 0.4.0.0.4 (current -> skip). `update_sc2v2` flow +
   `version` subcommand implemented, sim-tested. Remaining: probe the
   0x06 bulk write-ack, then the real flash.
+- 2026-10-19: first flash (transport-B model) ACKed everything but left
+  fw at 2.3.2.1 -> B writes are inert on SC2V2. Vendor BBBBB branch
+  decoded: images stream through the Airoha interface (0x3220, cmd
+  0x05/0x06/0x08/0x0A, block idx = container image index). Second run
+  exposed a poll race (reply read before CRC filled) -> vendor's
+  length-byte ready gate + chunk retry fixed it. pkexec works for the
+  root step (polkit GUI prompt).
