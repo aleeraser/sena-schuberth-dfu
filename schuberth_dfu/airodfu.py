@@ -52,7 +52,7 @@ class AirohaResetError(AirohaError):
 class Link:
     """Transport A command layer over a transport.Handle (or fake)."""
 
-    def __init__(self, handle, *, poll_interval: float = 0.05,
+    def __init__(self, handle, *, poll_interval: float = 0.002,
                  timeout: float = 5.0):
         self.h = handle
         self.poll_interval = poll_interval
