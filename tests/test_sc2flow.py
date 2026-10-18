@@ -139,3 +139,22 @@ def test_parse_submesh_image_version():
     from schuberth_dfu.sc2flow import parse_submesh_image_version
     assert parse_submesh_image_version("Submesh_v0.4b4.bin") == (0, 4, 0, 0, 4)
     assert parse_submesh_image_version("vp.bin") is None
+
+
+def test_airo_ready_retries_flaky_interface():
+    from schuberth_dfu.airodfu import AirohaError, Link
+    from schuberth_dfu.sc2flow import airo_ready
+    from schuberth_dfu.sim import FakeAiroha
+
+    class Flaky(Link):
+        def __init__(self, h, fails):
+            super().__init__(h, poll_interval=0, timeout=0.01)
+            self.left = fails
+        def version(self):
+            if self.left:
+                self.left -= 1
+                raise AirohaError("silent")
+            return super().version()
+
+    link = Flaky(FakeAiroha(version=(0, 4, 0, 0, 4)), fails=3)
+    assert airo_ready(link, retries=5, delay=0) == (0, 4, 0, 0, 4)
