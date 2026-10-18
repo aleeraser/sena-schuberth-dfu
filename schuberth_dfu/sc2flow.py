@@ -57,6 +57,8 @@ class MeshLink:
     def _await_ok(self, read: Callable[[], bytes]) -> bytes:
         for _ in range(self.busy_retries):
             rep = read()
+            if rep == b"":
+                raise Sc2Error("device stopped answering (link dead?)")
             if len(rep) >= 3 and rep[2] != 1:
                 return rep
             time.sleep(self.busy_delay)
