@@ -51,3 +51,8 @@ Wire everything into `schuberth-dfu update`:
   is informational (vendor logs only); device re-enumerates 0x3220
   ~1 s after each applied block -> vendor-style per-block re-open
   added. Full-bundle run in progress.
+- 2026-10-18 (evening): framing settled (0x3220 parses only [01 3C cmd];
+  id6/7 pair + 65B C-framing dead). Block loop semantics from the shared
+  region: per image NOP/0x05/0x06*/0x07/0x08, and every phase must be
+  re-armed with 0x0F on B (without it the next image's 0x06 -> status 2).
+  Attempt 11 runs that exact vendor sequence.
