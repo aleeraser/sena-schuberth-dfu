@@ -33,3 +33,9 @@ Wire everything into `schuberth-dfu update`:
    lsusb shows the real DFU PID, update DFU_MESH_PIDS; write ack errors →
    chunk/CRC semantics
 7. Record results here + findings.md
+- 2026-10-18: live session on SC2V2 (0x3217 + 0x3220). hidapi/kernel path
+  dead (vendor descriptor typos); raw pyusb backend added (`rawusb.py`,
+  sudo). Both transports confirmed on hardware: main fw v2.3.2.1 (behind
+  v2.4), submesh 0.4.0.0.4 (current -> skip). `update_sc2v2` flow +
+  `version` subcommand implemented, sim-tested. Remaining: probe the
+  0x06 bulk write-ack, then the real flash.
