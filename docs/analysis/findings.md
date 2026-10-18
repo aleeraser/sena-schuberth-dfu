@@ -378,13 +378,26 @@ only; its 0x06/0x07 ACKs are inert. 0x0F/0x12 answer status 2 on live
 devices and the vendor state machine proceeds anyway (the je branches
 are the taken path).
 
+**Airoha block-update lifecycle on live SC2V2 (2026-10-18) [observed]:**
+per container image (block idx = image index): cmd 0x05(idx) → 0x06
+58-B chunks (device echoes per-chunk CRC-16/CCITT; all matched for the
+full 1.07 MB SC2.img at ~4 ms/chunk with a 2 ms poll interval — 50 ms
+polling was the pacing bottleneck, ~90 ms/chunk) → 0x08 VERIFY (status
+0) → 0x0A GET_DFU_RESULT answers **1**, which the vendor only logs
+("GET_DFU_RESULT value[%d]" then "BLOCK %d UPDATE OK" — not a failure
+code). ~1 s later the **0x3220 interface re-enumerates** (apply-reset;
+gone ~5 s) — the vendor re-opens after every block (retry loop
+0x10003c204). Re-sending 0x06 after such a reset without a fresh
+0x05(idx) is rejected with status 2. Transport B stays alive through
+all of this; main version still reads 2.3.2.1 until the whole flow +
+reboot completes.
+
 ## Unknowns / next steps
 
-- **SC2V2 (0x3217) flow retarget**: live topology shows its DFU path is the
-  Airoha transport A on 0x3220 (62-B reports, cmd 5/6/8/0x0A), not the
-  transport B/C bulk path `sc2flow.py` currently implements. Confirm with
-  probe_sc2.py (echo on GET id2), then port `airodfu.py` to the 0x3220
-  handle. The 0x3217 interface's role (BT side? legacy?) still unclear.
+- ~~SC2V2 (0x3217) flow retarget~~ — resolved 2026-10-18: DFU path is
+  the Airoha transport A on 0x3220 (cmd 5/6/8/0x0A per block, block idx
+  = container image index); implemented in `sc2flow.update_sc2v2`.
+  The 0x3217 interface's role (BT side? legacy?) still unclear.
 - Exact phase→image mapping for SC2 (which container image goes in which
   0x0F phase; mesh .ldr vs main CSR-dfu2 ordering) — needs a live trace or
   deeper CFG of the dispatcher thunks 0x100038cf8/0x100038cff.

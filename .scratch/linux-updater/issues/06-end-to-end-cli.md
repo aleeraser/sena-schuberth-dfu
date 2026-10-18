@@ -46,3 +46,8 @@ Wire everything into `schuberth-dfu update`:
   exposed a poll race (reply read before CRC filled) -> vendor's
   length-byte ready gate + chunk retry fixed it. pkexec works for the
   root step (polkit GUI prompt).
+- 2026-10-18 (later): Airoha-side run got block 0 fully streamed+CRC'd
+  in ~80 s (2 ms poll fixed the 90 ms/chunk pacing). GET_DFU_RESULT=1
+  is informational (vendor logs only); device re-enumerates 0x3220
+  ~1 s after each applied block -> vendor-style per-block re-open
+  added. Full-bundle run in progress.
