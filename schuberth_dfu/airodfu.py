@@ -55,6 +55,9 @@ class Link:
     def command(self, cmd: int, params: bytes = b"") -> bytes:
         """Send one command, poll for the matching feature reply.
 
+        Ready signal per the vendor poll loop (sub_100108d34): the reply
+        length byte [1] must be non-zero AND [2] must echo the command;
+        a zeroed/partial buffer (device still processing) is not ready.
         Returns the full 62-byte reply; payload starts at offset 4.
         Raises AirohaError on timeout or non-zero status.
         """
@@ -68,7 +71,7 @@ class Link:
         deadline = time.monotonic() + self.timeout
         while True:
             rep = self.h.feature_get()
-            if len(rep) >= 3 and rep[2] == cmd:
+            if len(rep) >= 3 and rep[1] != 0 and rep[2] == cmd:
                 break
             if time.monotonic() >= deadline:
                 raise AirohaError(f"no echo for cmd {cmd:#02x} "
@@ -116,9 +119,15 @@ def update_image(link: Link, data: bytes, image: Image,
     sent = 0
     for off in range(0, len(blob), CHUNK_LEN):
         chunk = blob[off:off + CHUNK_LEN]
-        dev_crc = link.write_chunk(chunk)
         our_crc = crc16_ccitt(chunk)
-        if dev_crc != our_crc:
+        for attempt in range(3):
+            dev_crc = link.write_chunk(chunk)
+            if dev_crc == our_crc:
+                break
+            # live devices occasionally answer before filling the CRC
+            # field; re-send (vendor re-writes on bad acks too).
+            if attempt < 2:
+                continue
             raise AirohaError(
                 f"CRC mismatch at {off:#x}: device {dev_crc:#04x} != ours {our_crc:#04x}")
         running = crc16_ccitt(chunk, running)

@@ -10,6 +10,7 @@ import struct
 
 from .container import SENA_MAGIC
 from .crc import crc16_ccitt
+from .airodfu import REPLY_PAYLOAD_LEN
 
 
 def build_container(version=b"v9.9-build9", device_id=0x3170,
@@ -56,6 +57,7 @@ class FakeAiroha:
         params = data[3:]
         self.cmds.append(cmd)
         rep = bytearray(62)
+        rep[1] = 2 + REPLY_PAYLOAD_LEN.get(cmd, 0)   # length byte (ready signal)
         rep[2] = cmd
         rep[3] = 0
         if cmd == 0x06:
