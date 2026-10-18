@@ -106,30 +106,33 @@ def sc2v2_container():
     main_blob, vp_blob, sub_blob = os.urandom(300), os.urandom(120), os.urandom(60)
     data = build_container(
         version=b"v2.4-build0", device_id=0x3217,
-        blobs=[main_blob, vp_blob, b"junk", sub_blob],
-        names=[b"SC2.img", b"vp.bin", b"x.bin", b"Submesh_v0.4b4.bin"],
-        types=[0, 1, 2, 3])
+        blobs=[main_blob, vp_blob, sub_blob],
+        names=[b"SC2.img", b"vp.bin", b"Submesh_v0.4b4.bin"],
+        types=[0, 1, 3])
     return data, parse_sena_container(data), (main_blob, vp_blob, sub_blob)
 
 
-def test_sc2v2_flashes_main_skips_current_submesh():
+def test_sc2v2_streams_all_blocks_through_airoha():
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
-    data, container, (main_blob, vp_blob, _) = sc2v2_container()
+    data, container, (main_blob, vp_blob, sub_blob) = sc2v2_container()
     main, mesh = FakeSc2V2(version=(2, 3, 2, 1)), FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, mesh, container, data) is True
-    assert main.chunks == main_blob + vp_blob          # types 0+1 over B
-    assert mesh.cmds == [0x01]                        # submesh: version only
-    assert main.cmds[-2:] == [0x07, 0x08]             # commit attempted
+    assert main.chunks == b""                       # B is inert for writes
+    assert mesh.written == main_blob + vp_blob      # blocks 0+1 via A
+    assert 0x06 not in [c for c in main.cmds]
+    assert main.cmds == [0x01, 0x0F, 0x08]          # version, start, reboot
+    # submesh block skipped on version match: no 0x06 for its bytes
+    assert sub_blob not in mesh.written
 
 
-def test_sc2v2_skips_when_both_current():
+def test_sc2v2_skips_when_current():
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
     data, container, _ = sc2v2_container()
     main, mesh = FakeSc2V2(version=(2, 4, 0, 0)), FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, mesh, container, data) is False
-    assert main.cmds == [0x01] and mesh.cmds == [0x01]
+    assert main.cmds == [0x01] and mesh.cmds == []
 
 
 def test_parse_submesh_image_version():

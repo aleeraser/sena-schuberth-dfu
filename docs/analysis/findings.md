@@ -363,6 +363,21 @@ same buffer).
 - hidapi cannot drive these devices (ID-byte handling + kernel truncation);
   the CLI needs a pyusb backend with kernel-driver detach (root).
 
+**CORRECTION (2026-10-19, first live flash attempt) [observed]:** the
+above interpretation was wrong. Writing SC2.img+vp.bin as 0x06 chunks on
+0x3217 and committing with 0x07+0x08 was fully ACKed (status 0) but did
+**not** change the firmware (still 2.3.2.1 after reboot+replug); a bare
+0x07 never re-enumerates. The vendor's SC2V2 branch (BBBBB → je
+0x1000407ee/0x1000408ed, log "Qcc Mesh Update start VP") sends 0x0F on
+0x3217 then calls **sub_100108544 (airoha mesh open)** and streams the
+container through **transport A on 0x3220**: the Airoha side is the
+master MCU (cmd 0x05 answers for block idx 0/1/2 — one per container
+image — taking ~4 s each; replies surface in the *next* command's poll
+window). Transport B on 0x3217 is for version query + session cmds
+only; its 0x06/0x07 ACKs are inert. 0x0F/0x12 answer status 2 on live
+devices and the vendor state machine proceeds anyway (the je branches
+are the taken path).
+
 ## Unknowns / next steps
 
 - **SC2V2 (0x3217) flow retarget**: live topology shows its DFU path is the

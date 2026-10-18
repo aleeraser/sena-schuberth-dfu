@@ -90,8 +90,8 @@ def probe_mesh(dev):
     Reply: [0]=0x02, [1]=len, [2]=echo cmd, [3]=status, [4..]=payload."""
     print("\n== 0x3220 mesh interface: SET(OUT,id1,62B) + GET(id2) ==")
     drain_ep(dev, 0x83)
-    seq = [(0x01, b""), (0x05, bytes([0x00])), (0x05, bytes([0x01])),
-           (0x05, bytes([0x02])), (0x0A, b""), (0x00, b"")]
+    seq = [(0x01, b""), (0x05, bytes([0x01])), (0x05, bytes([0x02])),
+           (0x05, bytes([0x03])), (0x05, bytes([0x00]))]
     for cmd, params in seq:
         print(f"  -- cmd {cmd:#02x} params={params.hex()} --")
         try:
@@ -103,12 +103,11 @@ def probe_mesh(dev):
 
 
 def probe_normal(dev):
-    """0x3217: EP2 OUT interrupt, 1023B frame no ID prefix; replies are
-    pushed on EP1 IN: [0x02 echo status payload...]. Read-only + a
-    harmless 0x06 chunk write (no runloader, so nothing commits)."""
-    print("\n== 0x3217 normal interface: EP2 writes + EP1 pushed replies ==")
+    """0x3217: vendor BBBBB order: rV(0x12) x2 then 0x0F (VP start).
+    Does rV arm the session so 0x0F flips from status 2 to 0?"""
+    print("\n== 0x3217: vendor order 0x12, 0x12, 0x0F, 0x0F ==")
     drain_ep(dev, 0x81, 16)
-    for cmd in (0x01, 0x0F, 0x0F, 0x12, 0x00):
+    for cmd in (0x12, 0x12, 0x0F, 0x0F, 0x12):
         print(f"  -- cmd {cmd:#02x} --")
         try:
             dev.write(0x02, bulk_frame(cmd), 2000)
@@ -116,21 +115,6 @@ def probe_normal(dev):
             print(f"    write failed: {e}")
             return
         drain_ep(dev, 0x81, 16, secs=1.2)
-    print("  -- cmd 0x06 (4-byte test chunk, no commit) --")
-    frame = bulk_frame(0x06, b"\x00\x04DEAD")
-    try:
-        dev.write(0x02, frame, 2000)
-    except usb.core.USBError as e:
-        print(f"    write failed: {e}")
-        return
-    drain_ep(dev, 0x81, 16, secs=1.5)
-    print("  -- cmd 0x06 again --")
-    try:
-        dev.write(0x02, frame, 2000)
-    except usb.core.USBError as e:
-        print(f"    write failed: {e}")
-        return
-    drain_ep(dev, 0x81, 16, secs=1.5)
 
 
 def main():

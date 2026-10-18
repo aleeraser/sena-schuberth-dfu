@@ -129,14 +129,18 @@ def parse_submesh_image_version(name: str):
 def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                  *, log: Optional[Callable[[str], None]] = None,
                  force: bool = False) -> bool:
-    """SC2V2 flow — topology confirmed live 2026-10-18 (findings.md):
+    """SC2V2 flow — confirmed live 2026-10-18/19 (findings.md):
 
-    - main CSR images (type 0 SC2.img, type 1 vp.bin): transport B on
-      0x3217 (1023-B EP2 frames, pushed EP1 replies);
-    - submesh module (type 3 Submesh_*.bin): transport A on 0x3220 via
-      airodfu.Link;
-    - both interfaces coexist: no runloader re-enumeration step.
+    - 0x3217 (transport B) answers version queries; 0x0F/0x12 return
+      status 2 and 0x06/0x07 are ACKed but inert (no re-enumeration,
+      flash unchanged after a B-only attempt — verified the hard way);
+    - the vendor's SC2V2 branch ("Qcc Mesh Update start VP",
+      0x1000408ed) opens the Airoha mesh (sub_100108544) and streams
+      the container images through transport A on 0x3220; the Airoha
+      side is the master MCU (blocks 0..2 answer cmd 0x05, slowly).
 
+    So: version check on B, all writes through airodfu on 0x3220
+    (block idx = container image index), reboot via B cmd 0x08.
     Returns True if anything was written.
     """
     log = log or (lambda s: None)
@@ -147,54 +151,42 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
     target = parse_container_version(container.version)
     log(f"main version: {'.'.join(map(str, ver))} -> target "
         f"{'.'.join(map(str, target))}")
-    if ver != target or force:
-        log("Qcc Update start")
-        try:
-            link.bulk(CMD_START)
-        except Sc2Error as exc:
-            log(f"start cmd: {exc} (continuing; vendor tolerates this)")
-        for image in [i for i in container.images if i.type in (0, 1)]:
-            log(f"writing image type={image.type} size={image.size:#x} "
-                f"name={image.name or '-'}")
-            blob = image.blob(data)
-            total = len(blob)
-            for off in range(0, total, BULK_CHUNK_LEN):
-                chunk = blob[off:off + BULK_CHUNK_LEN]
-                link.bulk(CMD_WRITE, b"\x00" + bytes([len(chunk)]) + chunk)
-                done = off + len(chunk)
-                if done == total or done % (64 * 1024) < BULK_CHUNK_LEN:
-                    log(f"  {done * 100 // total}%")
-            log("image done")
-        wrote = True
-    else:
-        log("main: VERSION IS SAME, UPDATE SKIP")
+    if ver == target and not force:
+        log("VERSION IS SAME, UPDATE SKIP")
+        return False
 
-    sub = [i for i in container.images if i.type == 3]
-    if sub:
-        from .airodfu import Link as AiroLink
-        alink = AiroLink(mesh_handle)
-        sm_ver = tuple(alink.version())
-        sm_target = parse_submesh_image_version(sub[0].name)
-        log(f"submesh version: {'.'.join(map(str, sm_ver))} -> target "
-            f"{'.'.join(map(str, sm_target)) if sm_target else '?'}")
-        if sm_ver != sm_target or force:
-            from .airodfu import update_image as airo_update_image
-            for image in sub:
-                log(f"writing submesh image name={image.name or '-'}")
-                airo_update_image(alink, data, image,
-                                  progress=lambda d, t: log(
-                                      f"  submesh {d * 100 // t}%")
-                                  if d == t else None)
-            wrote = True
-        else:
-            log("submesh: VERSION IS SAME, UPDATE SKIP")
+    log("Qcc Mesh Update start VP")
+    try:
+        link.bulk(CMD_START)
+    except Sc2Error as exc:
+        log(f"start cmd: {exc} (live devices answer status 2; continuing)")
+
+    from .airodfu import AirohaError, Link as AiroLink, update_image
+    alink = AiroLink(mesh_handle, timeout=20.0)
+    sm_ver = tuple(alink.version())
+    log(f"airoha version: {'.'.join(map(str, sm_ver))}")
+    for idx, image in enumerate(container.images):
+        if image.type == 3:
+            sm_target = parse_submesh_image_version(image.name)
+            if sm_ver == sm_target and not force:
+                log(f"block {idx} ({image.name}): VERSION IS SAME, SKIP")
+                continue
+        try:
+            alink.block_version(idx)
+        except AirohaError as exc:
+            log(f"block {idx} version check: {exc} (continuing)")
+        log(f"writing block {idx} type={image.type} size={image.size:#x} "
+            f"name={image.name or '-'}")
+        update_image(alink, data, image,
+                     progress=lambda d, t: log(f"  {d * 100 // t}%")
+                     if d == t else None, log=log)
+        wrote = True
 
     if wrote:
-        log("committing: runloader + reboot")
-        for cmd in (CMD_RUNLOADER, CMD_REBOOT):
-            main_handle.write_bulk(cmd)
-            rep = main_handle.read_bulk(timeout_ms=1500)
-            log(f"cmd {cmd:#02x} reply: {rep[:8].hex() if rep else '-'}")
+        log("reboot")
+        main_handle.write_bulk(CMD_REBOOT)
+        rep = main_handle.read_bulk(timeout_ms=1500)
+        log(f"cmd 0x08 reply: {rep[:8].hex() if rep else '-'}")
     log("done")
     return wrote
 
