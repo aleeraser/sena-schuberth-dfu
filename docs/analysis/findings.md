@@ -203,9 +203,16 @@ Observed in the "Airoha BT Update Start" flow (0x10003bd6c–0x10003c3e3):
 | 1 | `[3]=block idx` (ignored by live fw) | VERSION CHECK per block ("BLOCK %d VERSION CHECK"; reply 5 bytes; "VERSION IS SAME, %d %d %d %d %d UPDATE SKIP") |
 | 5 | — (bare) | UPDATE START: opens the block transfer ("BLOCK %d UPDATE START"); slow on live (~4 s, flash prep); params ignored |
 | 6 | `[3]=chunk_len(≤0x3A)`, `[4..]=data` | block data write, 58-byte chunks; reply `[4..5]`=chunk CRC16 LE |
-| 0x5B | `[3]=2`, `[4..5]=running block CRC16 LE` | closes the block before verify ("NORMAL BLOCK[..] CRC[0x%04X][0x%04X]"); device checks it at VERIFY; without it the next block's 0x06 is rejected (status 2) |
+| 0x5B | `[3]=2`, `[4..5]=running block CRC16 LE` | 60S-style close only; **live SC2V2 rejects it (status 2)** — SC2V2 commits with 0x07 run-loader instead |
 | 8 | — | VERIFY/apply ("AIROHA BT VERIFY"); device re-enumerates ~1 s after the block completes |
-| 0x0A | — | COMMAND_GET_DFU_RESULT ("END COMMAND_GET_DFU_RESULT value[%d]") — logged, **not** gated; live answers 1 after applying |
+| 0x0A | — | COMMAND_GET_DFU_RESULT ("END COMMAND_GET_DFU_RESULT value[%d]") — logged, **not** gated; live answers 1 after applying; not sent by the SC2V2 loop |
+| 7 | — | RUN_LOADER: SC2V2 per-block commit of the staged block (shared-region loop 0x10004150e) |
+
+**SC2V2 per-block loop (confirmed live 2026-10-18 + shared region
+0x10004139c, which the BBBBB branch enters):** `0x00 NOP` → `0x05`
+start → `0x06` chunks (vendor writes via 90ac write-only, no per-chunk
+reply wait) → `0x07` run-loader (commit) → `0x08` reboot. No 0x5B, no
+0x0A — 0x5B on 0x3220 answers status 2.
 
 - Per-chunk **CRC-16/CCITT (poly 0x1021, MSB-first table @0x10016a980, init 0)**
   appended implicitly: device returns its CRC at reply[4..5] (LE); host compares,
@@ -382,19 +389,17 @@ are the taken path).
 
 **Airoha block-update lifecycle on live SC2V2 (2026-10-18) [observed]:**
 per container image (block idx = image index): 0x01(idx) version check
-→ 0x05 UPDATE START (bare, ~4 s) → 0x06 58-B chunks (device echoes
-per-chunk CRC-16/CCITT; all matched for the full 1.07 MB SC2.img at
-~4 ms/chunk with a 2 ms poll interval — 50 ms polling was the pacing
-bottleneck, ~90 ms/chunk) → **0x5B running-block-CRC close** → 0x08
-VERIFY (status 0; device checks the block CRC here) → 0x0A
-GET_DFU_RESULT answers **1**, which the vendor only logs
-("GET_DFU_RESULT value[%d]" then "BLOCK %d UPDATE OK" — not a failure
-code). ~1 s later the **0x3220 interface re-enumerates** (apply-reset;
-gone ~5 s) — the vendor re-opens after every block (retry loop
-0x10003c204). Without the 0x5B close the block stays open and the next
-block's 0x06 is rejected with status 2 (observed before the 0x5B was
-added). Transport B stays alive through all of this; main version still
-reads 2.3.2.1 until the whole flow + reboot completes.
+(same 5 bytes for every param) → 0x00 NOP → 0x05 UPDATE START (bare,
+~4 s) → 0x06 58-B chunks (device echoes per-chunk CRC-16/CCITT; all
+matched for the full 1.07 MB SC2.img at ~4 ms/chunk with a 2 ms poll
+interval — 50 ms polling was the pacing bottleneck, ~90 ms/chunk) →
+0x07 RUN_LOADER commit → 0x08 (0x5B is rejected here: status 2; an
+unclosed/uncommitted block makes the *next* block's 0x06 answer
+status 2 too). After the block completes the **0x3220 interface
+re-enumerates** (apply-reset; gone ~5 s) — the vendor re-opens after
+every block (retry loop 0x10003c204). Transport B stays alive through
+all of this; main version still reads 2.3.2.1 until the whole flow +
+reboot completes.
 
 ## Unknowns / next steps
 
