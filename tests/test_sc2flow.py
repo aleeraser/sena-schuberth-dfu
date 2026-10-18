@@ -160,7 +160,7 @@ def test_airo_ready_retries_flaky_interface():
     assert airo_ready(link, retries=5, delay=0) == (0, 4, 0, 0, 4)
 
 
-def test_sc2v2_reopens_mesh_when_device_resets_at_verify():
+def test_sc2v2_apply_reset_at_verify_moves_to_next_block():
     from schuberth_dfu.rawusb import RawUsbError
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
@@ -170,8 +170,7 @@ def test_sc2v2_reopens_mesh_when_device_resets_at_verify():
         """Dies like the live device: USB error when verify commits the
         block and the interface re-enumerates."""
         def write_report(self, d):
-            if d[2] == 0x08 and not getattr(self, "already_reset", False):
-                self.already_reset = True
+            if d[2] == 0x08:
                 raise RawUsbError("I/O error")
             return super().write_report(d)
 
@@ -180,5 +179,27 @@ def test_sc2v2_reopens_mesh_when_device_resets_at_verify():
     second = FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, first, container, data,
                         mesh_reopen=lambda: second) is True
-    assert first.written == main_blob          # all chunks, died at verify
-    assert second.written == main_blob + vp_blob  # full re-send + block 1
+    assert first.written == main_blob      # all chunks, died at verify
+    assert second.written == vp_blob       # block applied: no re-send
+
+
+def test_sc2v2_midblock_death_resends_the_block():
+    from schuberth_dfu.rawusb import RawUsbError
+    from schuberth_dfu.sc2flow import update_sc2v2
+    from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
+    data, container, (main_blob, vp_blob, _) = sc2v2_container()
+
+    class FlakyAiroha(FakeAiroha):
+        """Dies mid-stream (second chunk), before anything is committed."""
+        def write_report(self, d):
+            if d[2] == 0x06 and len(self.written) == 58:
+                raise RawUsbError("I/O error")
+            return super().write_report(d)
+
+    main = FakeSc2V2(version=(2, 3, 2, 1))
+    first = FlakyAiroha(version=(0, 4, 0, 0, 4))
+    second = FakeAiroha(version=(0, 4, 0, 0, 4))
+    assert update_sc2v2(main, first, container, data,
+                        mesh_reopen=lambda: second) is True
+    assert first.written == main_blob[:58]     # died after 1 chunk
+    assert second.written == main_blob + vp_blob  # block 0 re-sent whole

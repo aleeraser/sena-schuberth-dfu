@@ -199,7 +199,8 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
     except Sc2Error as exc:
         log(f"start cmd: {exc} (live devices answer status 2; continuing)")
 
-    from .airodfu import AirohaError, Link as AiroLink, update_image
+    from .airodfu import (AirohaError, AirohaResetError,
+                          Link as AiroLink, update_image)
     alink = AiroLink(mesh_handle, timeout=20.0)
     sm_ver = airo_ready(alink, log=log)
     log(f"airoha version: {'.'.join(map(str, sm_ver))}")
@@ -221,6 +222,18 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                 update_image(alink, data, image,
                              progress=lambda d, t: log(f"  {d * 100 // t}%")
                              if d == t else None, log=log)
+                wrote = True
+                break
+            except AirohaResetError as exc:
+                # every chunk CRC matched; the device died at verify
+                # because it APPLIED the block and re-enumerated.
+                # Re-open and move on to the next block (no re-send).
+                log(f"block {idx} applied by device ({exc})")
+                if mesh_reopen is None:
+                    raise Sc2Error(f"block {idx} applied but link died") from exc
+                mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
+                alink = AiroLink(mesh_handle, timeout=20.0)
+                sm_ver = airo_ready(alink, log=log)
                 wrote = True
                 break
             except (AirohaError, RawUsbError) as exc:

@@ -43,6 +43,12 @@ class AirohaError(Exception):
     pass
 
 
+class AirohaResetError(AirohaError):
+    """Link died at/after VERIFY: the device applied the block and
+    re-enumerated (observed live on SC2V2 at verify of block 0). The
+    block itself was fully streamed and committed by the device."""
+
+
 class Link:
     """Transport A command layer over a transport.Handle (or fake)."""
 
@@ -136,7 +142,14 @@ def update_image(link: Link, data: bytes, image: Image,
             progress(sent, len(blob))
     if log:
         log(f"block crc = {running:#06x}")
-    link.verify()
-    result = link.get_dfu_result()
+    from .rawusb import RawUsbError
+    try:
+        link.verify()
+        result = link.get_dfu_result()
+    except (RawUsbError, OSError) as exc:
+        # every chunk landed with a matching CRC; if the link dies now
+        # the device is applying the block (apply-reset), not rejecting
+        # it — the flow treats this as "block done, interface gone".
+        raise AirohaResetError(f"link died at verify/result: {exc}") from exc
     if result != 0:
         raise AirohaError(f"GET_DFU_RESULT = {result}")
