@@ -314,8 +314,45 @@ CRC-16/CCITT init 0, same table as the Airoha path.
 half of ticket 07; loader-internal meaning of the duplicate table at 0x64
 still open.)
 
+## Live SC2V2 USB topology + report-ID convention [observed 2026-10-18, tools/re/probe_sc2.py]
+
+Connected SC2V2 enumerates as a composite with **two** HID interfaces:
+
+- **092b:3217** (hidraw5, `3-3.1:1.0`): endpoints EP1 IN **16 B**, EP2 OUT
+  **64 B** (interrupt). Report descriptor (33 B) is malformed:
+  `85 01 09 02 96 FE 03 75 08 91 02` — `96 FE 03` is a vendor typo for
+  `76 FE 03` (Report Count 0x03FE=1022), so Linux sizes Output id1 at 1 byte
+  and truncates every write; Input id2 = 66 B (doesn't fit the 16 B IN
+  endpoint either). Control `SET_REPORT(OUTPUT,id1,1023B)` **STALLs (EPIPE)**
+  while the headset is in USB/charging mode.
+- **092b:3220** "MediaTek Inc Airoha Headset" (hidraw7, `3-3.2:1.0`):
+  **IN endpoint only** (EP3 IN 64 B) — output reports must go via
+  SET_REPORT control transfers. Two vendor collections, both 61-byte data:
+  usage page 0xFF00/usage 1 → Out id1 / In id2; usage page 0xFF13/usage 1 →
+  Out id6 / In id7. This is exactly what `sub_100108544` ("airoha mesh
+  pid[%04X]", usage page 0xFF00, usage 1) opens — the SC2V2's DFU path is
+  the **Airoha transport A on 0x3220**, not transport B on 0x3217.
+- The headset powers off its BT side when the USB cable is attached
+  (charging/USB mode); the Airoha chip is bus-powered and 0x3220 stays
+  present — this is the state the vendor updater operates in.
+
+**Report-ID duplication (shim `sub_10012e461`, [derived]):** the write shim
+takes the report ID from `buf[0]` and only strips it when it is 0:
+`IOHIDDeviceSetReport(dev, type, reportID=buf[0], data=buf, len)` — so the
+ID byte is **duplicated inside the payload**. Transport A write on the wire:
+`SET_REPORT(OUTPUT, id=1)` with 62 B `[01 3C cmd ...]`. The device follows
+the same convention: `GET_REPORT(id2)` replies `[02 ...]` (ID echoed as data
+byte 0). Probe with the 61-byte frame (no leading 01) got silence; the
+device answers GET_REPORT for FEATURE/INPUT/OUTPUT alike (all return the
+same buffer).
+
 ## Unknowns / next steps
 
+- **SC2V2 (0x3217) flow retarget**: live topology shows its DFU path is the
+  Airoha transport A on 0x3220 (62-B reports, cmd 5/6/8/0x0A), not the
+  transport B/C bulk path `sc2flow.py` currently implements. Confirm with
+  probe_sc2.py (echo on GET id2), then port `airodfu.py` to the 0x3220
+  handle. The 0x3217 interface's role (BT side? legacy?) still unclear.
 - Exact phase→image mapping for SC2 (which container image goes in which
   0x0F phase; mesh .ldr vs main CSR-dfu2 ordering) — needs a live trace or
   deeper CFG of the dispatcher thunks 0x100038cf8/0x100038cff.
