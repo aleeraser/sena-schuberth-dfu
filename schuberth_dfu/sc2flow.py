@@ -126,6 +126,27 @@ def parse_submesh_image_version(name: str):
     return (major, minor, 0, 0, build)
 
 
+def airo_ready(alink, *, retries: int = 13, delay: float = 1.5,
+               log: Optional[Callable[[str], None]] = None):
+    """Vendor 'open airoha mesh' retry loop (0x100040a03, 13x): after the
+    0x0F session cmd — and after an aborted transfer — the Airoha side can
+    be briefly silent; gate on a successful cmd 0x01."""
+    log = log or (lambda s: None)
+    from .airodfu import AirohaError
+    quick = alink.timeout
+    alink.timeout = 5.0
+    try:
+        for i in range(retries):
+            try:
+                return tuple(alink.version())
+            except AirohaError as exc:
+                log(f"airoha not ready ({exc}); retry {i + 1}/{retries}")
+                time.sleep(delay)
+    finally:
+        alink.timeout = quick
+    raise Sc2Error("airoha interface never became ready")
+
+
 def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                  *, log: Optional[Callable[[str], None]] = None,
                  force: bool = False) -> bool:
@@ -163,7 +184,7 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
 
     from .airodfu import AirohaError, Link as AiroLink, update_image
     alink = AiroLink(mesh_handle, timeout=20.0)
-    sm_ver = tuple(alink.version())
+    sm_ver = airo_ready(alink, log=log)
     log(f"airoha version: {'.'.join(map(str, sm_ver))}")
     for idx, image in enumerate(container.images):
         if image.type == 3:
