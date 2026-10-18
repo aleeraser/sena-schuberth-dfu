@@ -198,13 +198,14 @@ until echo matches. Reply: `[2]=echo cmd, [3]=status, [4..]=payload`.
 
 Observed in the "Airoha BT Update Start" flow (0x10003bd6c–0x10003c3e3):
 
-| cmd | params | role (inferred from adjacent log strings) |
+| cmd | params | role (confirmed live 2026-10-18 + log strings) |
 |---|---|---|
-| 5 | block idx | VERSION CHECK (reply carries version bytes; "VERSION IS SAME, %d %d %d %d %d UPDATE SKIP") |
-| 6 | `[3]=chunk_len(≤0x3A)`, `[4..]=data` | block data write, 58-byte chunks |
-| 8 | — | VERIFY ("AIROHA BT VERIFY") |
-| 0x0A | — | COMMAND_GET_DFU_RESULT ("END COMMAND_GET_DFU_RESULT value[%d]") |
-| 0x5B | `[4]=2`, `[5..6]=u16` | seen in 60S flow (data-window cmd) |
+| 1 | `[3]=block idx` (ignored by live fw) | VERSION CHECK per block ("BLOCK %d VERSION CHECK"; reply 5 bytes; "VERSION IS SAME, %d %d %d %d %d UPDATE SKIP") |
+| 5 | — (bare) | UPDATE START: opens the block transfer ("BLOCK %d UPDATE START"); slow on live (~4 s, flash prep); params ignored |
+| 6 | `[3]=chunk_len(≤0x3A)`, `[4..]=data` | block data write, 58-byte chunks; reply `[4..5]`=chunk CRC16 LE |
+| 0x5B | `[3]=2`, `[4..5]=running block CRC16 LE` | closes the block before verify ("NORMAL BLOCK[..] CRC[0x%04X][0x%04X]"); device checks it at VERIFY; without it the next block's 0x06 is rejected (status 2) |
+| 8 | — | VERIFY/apply ("AIROHA BT VERIFY"); device re-enumerates ~1 s after the block completes |
+| 0x0A | — | COMMAND_GET_DFU_RESULT ("END COMMAND_GET_DFU_RESULT value[%d]") — logged, **not** gated; live answers 1 after applying |
 
 - Per-chunk **CRC-16/CCITT (poly 0x1021, MSB-first table @0x10016a980, init 0)**
   appended implicitly: device returns its CRC at reply[4..5] (LE); host compares,
@@ -348,8 +349,9 @@ same buffer).
 
 **Live protocol confirmed (probe, 2026-10-18) [observed]:**
 - 0x3220 transport A works: cmd 0x01 → `02 07 01 00 00 04 00 00 04 ...`
-  ([2]=echo, [3]=status 0 OK). cmd 0x05 with no params → silent (needs
-  block idx param).
+  ([2]=echo, [3]=status 0 OK). cmd 0x05 answers but **slowly (~4 s)** —
+  its replies often surface in the *next* command's poll window (params
+  are ignored).
 - 0x3217 transport B works via **EP2 interrupt OUT, 1023 B frame with NO
   ID prefix on the wire** (the 1024 B ID-prefixed variant is ignored; 64 B
   truncated writes ignored). Replies are **pushed on EP1 IN** as short
@@ -371,26 +373,28 @@ above interpretation was wrong. Writing SC2.img+vp.bin as 0x06 chunks on
 0x1000407ee/0x1000408ed, log "Qcc Mesh Update start VP") sends 0x0F on
 0x3217 then calls **sub_100108544 (airoha mesh open)** and streams the
 container through **transport A on 0x3220**: the Airoha side is the
-master MCU (cmd 0x05 answers for block idx 0/1/2 — one per container
-image — taking ~4 s each; replies surface in the *next* command's poll
-window). Transport B on 0x3217 is for version query + session cmds
+master MCU (three blocks, one per container image; block cmds are slow,
+~4 s, with replies surfacing in the *next* command's poll window).
+Transport B on 0x3217 is for version query + session cmds
 only; its 0x06/0x07 ACKs are inert. 0x0F/0x12 answer status 2 on live
 devices and the vendor state machine proceeds anyway (the je branches
 are the taken path).
 
 **Airoha block-update lifecycle on live SC2V2 (2026-10-18) [observed]:**
-per container image (block idx = image index): cmd 0x05(idx) → 0x06
-58-B chunks (device echoes per-chunk CRC-16/CCITT; all matched for the
-full 1.07 MB SC2.img at ~4 ms/chunk with a 2 ms poll interval — 50 ms
-polling was the pacing bottleneck, ~90 ms/chunk) → 0x08 VERIFY (status
-0) → 0x0A GET_DFU_RESULT answers **1**, which the vendor only logs
+per container image (block idx = image index): 0x01(idx) version check
+→ 0x05 UPDATE START (bare, ~4 s) → 0x06 58-B chunks (device echoes
+per-chunk CRC-16/CCITT; all matched for the full 1.07 MB SC2.img at
+~4 ms/chunk with a 2 ms poll interval — 50 ms polling was the pacing
+bottleneck, ~90 ms/chunk) → **0x5B running-block-CRC close** → 0x08
+VERIFY (status 0; device checks the block CRC here) → 0x0A
+GET_DFU_RESULT answers **1**, which the vendor only logs
 ("GET_DFU_RESULT value[%d]" then "BLOCK %d UPDATE OK" — not a failure
 code). ~1 s later the **0x3220 interface re-enumerates** (apply-reset;
 gone ~5 s) — the vendor re-opens after every block (retry loop
-0x10003c204). Re-sending 0x06 after such a reset without a fresh
-0x05(idx) is rejected with status 2. Transport B stays alive through
-all of this; main version still reads 2.3.2.1 until the whole flow +
-reboot completes.
+0x10003c204). Without the 0x5B close the block stays open and the next
+block's 0x06 is rejected with status 2 (observed before the 0x5B was
+added). Transport B stays alive through all of this; main version still
+reads 2.3.2.1 until the whole flow + reboot completes.
 
 ## Unknowns / next steps
 
