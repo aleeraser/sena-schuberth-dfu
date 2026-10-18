@@ -221,10 +221,9 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                         f"{'. '.join(map(str, bver))}")
                 except AirohaError as exc:
                     log(f"block {idx} version check: {exc} (continuing)")
-                try:
-                    alink.nop()
-                except AirohaError as exc:
-                    log(f"block {idx} nop: {exc} (vendor only logs)")
+                # NOTE: no NOP here — live 0x3220 never echoes cmd 0x00
+                # (unsupported in the [01 3C cmd] framing) and sending it
+                # precedes every observed "0x06 status=2" rejection.
                 alink.start_block()
                 update_image(alink, data, image,
                              progress=lambda d, t: log(f"  {d * 100 // t}%")
