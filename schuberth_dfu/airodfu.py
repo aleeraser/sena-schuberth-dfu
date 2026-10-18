@@ -182,11 +182,10 @@ def update_image(link: Link, data: bytes, image: Image,
     from .rawusb import RawUsbError
     try:
         if close == "sc2v2":
-            # Per-block commit only; the final 0x08 reboot is sent once
-            # after ALL blocks (sending it per block interrupts the
-            # flash apply — observed live: nothing applied, next block
-            # rejected with status 2).
+            # vendor phase state: 0x00, 0x05, 0x06*, 0x07, 0x08 — per
+            # image, each phase re-armed by the 0x0F session cmd on B.
             link.run_loader()
+            link.verify()
         else:
             link.block_crc(running)
             link.verify()

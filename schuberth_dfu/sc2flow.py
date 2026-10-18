@@ -263,6 +263,15 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
             mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
             alink = AiroLink(mesh_handle, timeout=20.0)
             sm_ver = airo_ready(alink, log=log)
+        # Each vendor phase state begins with the 0x0F session cmd on
+        # transport B; after a run-loader the staging session is spent
+        # and the next image's 0x06 is rejected (status 2) without it.
+        if idx + 1 < len(container.images):
+            try:
+                link.bulk(CMD_START)
+                log(f"session cmd for next phase: ok")
+            except Sc2Error as exc:
+                log(f"session cmd: {exc} (continuing)")
 
     if wrote:
         # single final reboot AFTER all blocks are staged+committed:

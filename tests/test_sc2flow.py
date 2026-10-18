@@ -121,7 +121,7 @@ def test_sc2v2_streams_all_blocks_through_airoha():
     assert main.chunks == b""                       # B is inert for writes
     assert mesh.written == main_blob + vp_blob      # blocks 0+1 via A
     assert 0x06 not in [c for c in main.cmds]
-    assert main.cmds == [0x01, 0x0F, 0x08]          # version, start, reboot
+    assert main.cmds == [0x01, 0x0F, 0x0F, 0x0F, 0x08]  # version, per-phase starts, reboot
     # submesh block skipped on version match: no 0x06 for its bytes
     assert sub_blob not in mesh.written
 
