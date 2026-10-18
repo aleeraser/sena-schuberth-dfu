@@ -151,5 +151,8 @@ def update_image(link: Link, data: bytes, image: Image,
         # the device is applying the block (apply-reset), not rejecting
         # it — the flow treats this as "block done, interface gone".
         raise AirohaResetError(f"link died at verify/result: {exc}") from exc
-    if result != 0:
-        raise AirohaError(f"GET_DFU_RESULT = {result}")
+    # Vendor logs "GET_DFU_RESULT value[%d]" then "BLOCK %d UPDATE OK"
+    # without gating on the value; live SC2V2 answers 1 after applying
+    # a block. Informational only.
+    if log:
+        log(f"DFU result = {result}")

@@ -210,15 +210,15 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
             if sm_ver == sm_target and not force:
                 log(f"block {idx} ({image.name}): VERSION IS SAME, SKIP")
                 continue
-        try:
-            alink.block_version(idx)
-        except AirohaError as exc:
-            log(f"block {idx} version check: {exc} (continuing)")
         log(f"writing block {idx} type={image.type} size={image.size:#x} "
             f"name={image.name or '-'}")
         from .rawusb import RawUsbError
         for attempt in (1, 2):
             try:
+                try:
+                    alink.block_version(idx)
+                except AirohaError as exc:
+                    log(f"block {idx} version check: {exc} (continuing)")
                 update_image(alink, data, image,
                              progress=lambda d, t: log(f"  {d * 100 // t}%")
                              if d == t else None, log=log)
@@ -237,9 +237,8 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                 wrote = True
                 break
             except (AirohaError, RawUsbError) as exc:
-                # the Airoha side re-enumerates when it applies a block
-                # (observed live at verify of block 0); re-open and
-                # re-send this block once (staging is idempotent).
+                # mid-block death: re-open and re-send this block once
+                # (staging is idempotent; block_version re-runs first).
                 log(f"block {idx} attempt {attempt} failed: {exc}")
                 if attempt == 2 or mesh_reopen is None:
                     raise Sc2Error(f"block {idx} failed: {exc}") from exc
@@ -247,6 +246,16 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                 mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
                 alink = AiroLink(mesh_handle, timeout=20.0)
                 sm_ver = airo_ready(alink, log=log)
+        # The device applies the block and re-enumerates shortly after
+        # the verify/result sequence (live: 0x3220 vanished ~1 s after
+        # 0x0A and was back ~5 s later); the vendor re-opens after every
+        # block (retry loop at 0x10003c204). Do the same before the next
+        # block so staging state is fresh.
+        if wrote and mesh_reopen is not None:
+            time.sleep(2.0)
+            mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
+            alink = AiroLink(mesh_handle, timeout=20.0)
+            sm_ver = airo_ready(alink, log=log)
 
     if wrote:
         log("reboot")
