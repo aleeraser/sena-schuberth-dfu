@@ -86,40 +86,35 @@ def drain_ep(dev, ep, size=64, secs=0.5):
 
 
 def probe_mesh(dev):
-    """0x3220: no OUT endpoint -> SET_REPORT control; FEATURE id2 poll."""
-    print("\n== 0x3220 mesh interface: SET_REPORT(OUT,id1,61B) + GET(FEATURE,id2) ==")
+    """0x3220: no OUT endpoint -> SET_REPORT control; GET_REPORT id2 poll.
+    Reply: [0]=0x02, [1]=len, [2]=echo cmd, [3]=status, [4..]=payload."""
+    print("\n== 0x3220 mesh interface: SET(OUT,id1,62B) + GET(id2) ==")
     drain_ep(dev, 0x83)
-    for cmd in (0x01, 0x05):
-        print(f"  -- cmd {cmd:#02x} --")
+    seq = [(0x01, b""), (0x05, bytes([0x00])), (0x05, bytes([0x01])),
+           (0x05, bytes([0x02])), (0x0A, b""), (0x00, b"")]
+    for cmd, params in seq:
+        print(f"  -- cmd {cmd:#02x} params={params.hex()} --")
         try:
-            set_report(dev, 0, RT_OUTPUT, 1, airo_frame(cmd))
+            set_report(dev, 0, RT_OUTPUT, 1, airo_frame(cmd, params))
         except usb.core.USBError as e:
             print(f"    SET failed: {e}")
             return
-        if poll_get(dev, 0, 2, 62, cmd) is None:
-            drain_ep(dev, 0x83)
+        poll_get(dev, 0, 2, 62, cmd)
 
 
 def probe_normal(dev):
-    """0x3217: has interrupt EPs (0x81 IN 16B, 0x02 OUT 64B). Control
-    SET_REPORT STALLed, so try raw interrupt OUT writes."""
-    print("\n== 0x3217 normal interface: interrupt OUT EP2 writes ==")
-    variants = [
-        ("1024B [id1,01,cmd]", 0x02, bytes([0x01]) + bulk_frame(0x01)),
-        ("1023B [01,cmd]", 0x02, bulk_frame(0x01)),
-        ("64B [id1,01,cmd]", 0x02, (bytes([0x01]) + bulk_frame(0x01))[:64]),
-    ]
-    for label, ep, data in variants:
-        print(f"  -- write EP{ep:#04x} {label} --")
+    """0x3217: EP2 OUT interrupt, 1023B frame no ID prefix; replies are
+    pushed on EP1 IN: [0x02 status result payload...]."""
+    print("\n== 0x3217 normal interface: EP2 writes + EP1 pushed replies ==")
+    drain_ep(dev, 0x81, 16)
+    for cmd in (0x01, 0x0F, 0x12, 0x05, 0x00):
+        print(f"  -- cmd {cmd:#02x} --")
         try:
-            n = dev.write(ep, data, 2000)
-            print(f"    wrote {n}")
+            dev.write(0x02, bulk_frame(cmd), 2000)
         except usb.core.USBError as e:
             print(f"    write failed: {e}")
-            continue
-        drain_ep(dev, 0x81, 16)
-        poll_get(dev, 0, 2, 67, 0x01, secs=0.6,
-                 types=(RT_INPUT, RT_FEATURE))
+            return
+        drain_ep(dev, 0x81, 16, secs=1.2)
 
 
 def main():

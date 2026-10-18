@@ -346,6 +346,23 @@ byte 0). Probe with the 61-byte frame (no leading 01) got silence; the
 device answers GET_REPORT for FEATURE/INPUT/OUTPUT alike (all return the
 same buffer).
 
+**Live protocol confirmed (probe, 2026-10-18) [observed]:**
+- 0x3220 transport A works: cmd 0x01 → `02 07 01 00 00 04 00 00 04 ...`
+  ([2]=echo, [3]=status 0 OK). cmd 0x05 with no params → silent (needs
+  block idx param).
+- 0x3217 transport B works via **EP2 interrupt OUT, 1023 B frame with NO
+  ID prefix on the wire** (the 1024 B ID-prefixed variant is ignored; 64 B
+  truncated writes ignored). Replies are **pushed on EP1 IN** as short
+  reports (~12 B): `02 01 00 02 03 02 01 ...` = ID, status=01, result=00
+  OK, payload `02 03 02 01` → **device version 2.3.2.1** (manifest latest
+  is 2.4 → the test device is behind; UPDATE SKIP will not trigger).
+- Interpretation: SC2V2 = main CSR firmware (0x3217, transport B,
+  container `SC2.img`) + **submesh module** (0x3220, transport A,
+  container `Submesh_v0.4b4.bin` — the Airoha image). Both interfaces
+  coexist; no runloader/re-enumeration observed for SC2V2.
+- hidapi cannot drive these devices (ID-byte handling + kernel truncation);
+  the CLI needs a pyusb backend with kernel-driver detach (root).
+
 ## Unknowns / next steps
 
 - **SC2V2 (0x3217) flow retarget**: live topology shows its DFU path is the
