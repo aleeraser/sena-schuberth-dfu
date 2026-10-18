@@ -99,15 +99,16 @@ def probe_mesh(dev):
         except usb.core.USBError as e:
             print(f"    SET failed: {e}")
             return
-        poll_get(dev, 0, 2, 62, cmd)
+        poll_get(dev, 0, 2, 62, cmd, secs=4.0)
 
 
 def probe_normal(dev):
     """0x3217: EP2 OUT interrupt, 1023B frame no ID prefix; replies are
-    pushed on EP1 IN: [0x02 status result payload...]."""
+    pushed on EP1 IN: [0x02 echo status payload...]. Read-only + a
+    harmless 0x06 chunk write (no runloader, so nothing commits)."""
     print("\n== 0x3217 normal interface: EP2 writes + EP1 pushed replies ==")
     drain_ep(dev, 0x81, 16)
-    for cmd in (0x01, 0x0F, 0x12, 0x05, 0x00):
+    for cmd in (0x01, 0x0F, 0x0F, 0x12, 0x00):
         print(f"  -- cmd {cmd:#02x} --")
         try:
             dev.write(0x02, bulk_frame(cmd), 2000)
@@ -115,6 +116,21 @@ def probe_normal(dev):
             print(f"    write failed: {e}")
             return
         drain_ep(dev, 0x81, 16, secs=1.2)
+    print("  -- cmd 0x06 (4-byte test chunk, no commit) --")
+    frame = bulk_frame(0x06, b"\x00\x04DEAD")
+    try:
+        dev.write(0x02, frame, 2000)
+    except usb.core.USBError as e:
+        print(f"    write failed: {e}")
+        return
+    drain_ep(dev, 0x81, 16, secs=1.5)
+    print("  -- cmd 0x06 again --")
+    try:
+        dev.write(0x02, frame, 2000)
+    except usb.core.USBError as e:
+        print(f"    write failed: {e}")
+        return
+    drain_ep(dev, 0x81, 16, secs=1.5)
 
 
 def main():

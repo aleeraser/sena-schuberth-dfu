@@ -100,3 +100,39 @@ def test_update_sc2_full_flow():
     assert tail.count(CMD_WRITE) == 5 + 1  # ceil(300/61)=5 plus 1
     assert tail.count(CMD_RUNLOADER) == 2
     assert tail.count(CMD_REBOOT) == 2
+
+
+def sc2v2_container():
+    main_blob, vp_blob, sub_blob = os.urandom(300), os.urandom(120), os.urandom(60)
+    data = build_container(
+        version=b"v2.4-build0", device_id=0x3217,
+        blobs=[main_blob, vp_blob, b"junk", sub_blob],
+        names=[b"SC2.img", b"vp.bin", b"x.bin", b"Submesh_v0.4b4.bin"],
+        types=[0, 1, 2, 3])
+    return data, parse_sena_container(data), (main_blob, vp_blob, sub_blob)
+
+
+def test_sc2v2_flashes_main_skips_current_submesh():
+    from schuberth_dfu.sc2flow import update_sc2v2
+    from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
+    data, container, (main_blob, vp_blob, _) = sc2v2_container()
+    main, mesh = FakeSc2V2(version=(2, 3, 2, 1)), FakeAiroha(version=(0, 4, 0, 0, 4))
+    assert update_sc2v2(main, mesh, container, data) is True
+    assert main.chunks == main_blob + vp_blob          # types 0+1 over B
+    assert mesh.cmds == [0x01]                        # submesh: version only
+    assert main.cmds[-2:] == [0x07, 0x08]             # commit attempted
+
+
+def test_sc2v2_skips_when_both_current():
+    from schuberth_dfu.sc2flow import update_sc2v2
+    from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
+    data, container, _ = sc2v2_container()
+    main, mesh = FakeSc2V2(version=(2, 4, 0, 0)), FakeAiroha(version=(0, 4, 0, 0, 4))
+    assert update_sc2v2(main, mesh, container, data) is False
+    assert main.cmds == [0x01] and mesh.cmds == [0x01]
+
+
+def test_parse_submesh_image_version():
+    from schuberth_dfu.sc2flow import parse_submesh_image_version
+    assert parse_submesh_image_version("Submesh_v0.4b4.bin") == (0, 4, 0, 0, 4)
+    assert parse_submesh_image_version("vp.bin") is None

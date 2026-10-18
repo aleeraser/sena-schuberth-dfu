@@ -13,10 +13,11 @@ from .crc import crc16_ccitt
 
 
 def build_container(version=b"v9.9-build9", device_id=0x3170,
-                    blobs=None, names=None):
+                    blobs=None, names=None, types=None):
     """Synthesize a container matching the layout in findings.md."""
     blobs = blobs or [b"main-fw" * 10, b"voice-prompts" * 5]
     names = names or [b"TEST_MAIN.bin", b"TEST_VP.bin"]
+    types = types or list(range(len(blobs)))
     count = len(blobs)
     table_end = 0x24 + count * 0x20
     header_size = table_end + 0x100 * max(len(names), 1)
@@ -30,7 +31,7 @@ def build_container(version=b"v9.9-build9", device_id=0x3170,
     struct.pack_into("<II", hdr, 0x1C, device_id, count)
     for i, (b, o) in enumerate(zip(blobs, offsets)):
         e = 0x24 + i * 0x20
-        struct.pack_into("<4I", hdr, e, i, 1, o, len(b))
+        struct.pack_into("<4I", hdr, e, types[i], 1, o, len(b))
         hdr[e + 16:e + 32] = hashlib.md5(b).digest()
     pos = table_end
     for n in names:
@@ -42,8 +43,9 @@ def build_container(version=b"v9.9-build9", device_id=0x3170,
 class FakeAiroha:
     """Transport A: 62-byte output report in, feature reply out."""
 
-    def __init__(self, corrupt_crc=False):
+    def __init__(self, corrupt_crc=False, version=(2, 5, 3, 0, 0)):
         self.corrupt_crc = corrupt_crc
+        self.version = version
         self.written = bytearray()
         self.cmds = []
         self._reply = b""
@@ -69,7 +71,7 @@ class FakeAiroha:
         elif cmd == 0x0A:
             rep[4] = 0
         elif cmd == 0x01:
-            rep[4:9] = bytes([2, 5, 3, 0, 0])
+            rep[4:9] = bytes(list(self.version))
         self._reply = bytes(rep)
 
     def feature_get(self):
@@ -127,3 +129,40 @@ class FakeSc2:
             busy[2] = 1
             return bytes(busy)
         return self._pending
+
+
+class FakeSc2V2:
+    """0x3217 raw-USB model, layout confirmed live 2026-10-18:
+    pushed EP1 replies [0x02, echo cmd, status, payload...]; 0x0F is
+    rejected with status 2 in normal mode; runloader/reboot answer
+    nothing (device reboots)."""
+
+    def __init__(self, version=(2, 3, 2, 1)):
+        self.version = version
+        self.cmds = []
+        self.chunks = bytearray()
+        self._pending = None
+
+    def close(self):
+        pass
+
+    def write_bulk(self, cmd, params=b""):
+        self.cmds.append(cmd)
+        if cmd in (0x07, 0x08):
+            self._pending = None            # no reply: device resets
+            return
+        rep = bytearray(16)
+        rep[0] = 0x02
+        rep[1] = cmd
+        rep[2] = 0
+        if cmd == 0x01:
+            rep[3:7] = bytes(list(self.version))
+        elif cmd == 0x0F:
+            rep[2] = 2                      # live: rejected pre-session
+        elif cmd == 0x06:
+            length = params[1]
+            self.chunks += params[2:2 + length]
+        self._pending = bytes(rep)
+
+    def read_bulk(self, timeout_ms=3000):
+        return self._pending or b""

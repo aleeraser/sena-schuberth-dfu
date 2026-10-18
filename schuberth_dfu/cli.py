@@ -78,6 +78,27 @@ def cmd_download(args) -> int:
     return 0
 
 
+def cmd_version(args) -> int:
+    from .rawusb import RawHandle, RawUsbError, scan_raw
+    found = {p for p, _, _ in scan_raw()}
+    if not found:
+        print("no SC2V2-family interfaces present (092b:3217/092b:3220)")
+        return 1
+    try:
+        if 0x3217 in found:
+            from .sc2flow import MeshLink, read_version
+            with RawHandle(0x3217) as h:
+                print("main:   ", ".".join(map(str, read_version(MeshLink(h)))))
+        if 0x3220 in found:
+            from .airodfu import Link
+            with RawHandle(0x3220) as h:
+                print("submesh:", ".".join(map(str, Link(h).version())))
+    except RawUsbError as exc:
+        print(f"version read failed: {exc}")
+        return 1
+    return 0
+
+
 def cmd_update(args) -> int:
     from .transport import Handle, scan  # lazy: hidapi only for hardware
     from .catalog import (FAMILY_AIROHA, FAMILY_CSR, family_for_pid)
@@ -124,6 +145,25 @@ def cmd_update(args) -> int:
 
     def log(msg: str) -> None:
         print(msg, flush=True)
+
+    if dev.product_id == 0x3217:
+        # SC2V2: kernel HID path unusable (malformed descriptors) -> raw
+        # USB control/interrupt transfers; needs root (hid-generic detach).
+        from .rawusb import RawHandle, RawUsbError, scan_raw
+        from .sc2flow import Sc2Error, update_sc2v2
+        pids = {p for p, _, _ in scan_raw()}
+        if 0x3220 not in pids:
+            print("submesh interface 092b:3220 not present; check the cable")
+            return 1
+        try:
+            with RawHandle(0x3217) as main_h, RawHandle(0x3220) as mesh_h:
+                update_sc2v2(main_h, mesh_h, container, data, log=log,
+                             force=args.force)
+        except (RawUsbError, Sc2Error) as exc:
+            print(f"SC2V2 flow failed: {exc}")
+            return 1
+        log("update complete")
+        return 0
 
     with Handle(dev) as handle:
         if fam == FAMILY_CSR:
@@ -211,10 +251,13 @@ def main(argv=None) -> int:
     p.add_argument("--force", action="store_true",
                    help="flash even if versions match")
 
+    sub.add_parser("version",
+                   help="read live versions (SC2V2 raw USB, read-only)")
+
     sub.add_parser("selftest",
                    help="run the update flows against simulated devices")
 
-    handlers = {"detect": cmd_detect, "check": cmd_check,
+    handlers = {"detect": cmd_detect, "check": cmd_check, "version": cmd_version,
                 "download": cmd_download, "update": cmd_update,
                 "selftest": cmd_selftest}
     args = ap.parse_args(argv)
