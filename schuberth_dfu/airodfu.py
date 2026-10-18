@@ -181,6 +181,11 @@ def update_image(link: Link, data: bytes, image: Image,
         log(f"block crc = {running:#06x}")
     from .rawusb import RawUsbError
     try:
+        if close == "stage":
+            # leave the block open: stage several images, then commit
+            # once with run_loader()+verify() (tried live: committing
+            # after block 0 makes block 1's 0x06 answer status 2).
+            return
         if close == "sc2v2":
             # vendor phase state: 0x00, 0x05, 0x06*, 0x07, 0x08 — per
             # image, each phase re-armed by the 0x0F session cmd on B.

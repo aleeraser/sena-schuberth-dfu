@@ -228,7 +228,7 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                 alink.start_block()
                 update_image(alink, data, image,
                              progress=lambda d, t: log(f"  {d * 100 // t}%")
-                             if d == t else None, log=log, close="sc2v2")
+                             if d == t else None, log=log, close="stage")
                 wrote = True
                 break
             except AirohaResetError as exc:
@@ -263,22 +263,16 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
             mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
             alink = AiroLink(mesh_handle, timeout=20.0)
             sm_ver = airo_ready(alink, log=log)
-        # Each vendor phase state begins with the 0x0F session cmd on
-        # transport B; after a run-loader the staging session is spent
-        # and the next image's 0x06 is rejected (status 2) without it.
-        if idx + 1 < len(container.images):
-            try:
-                link.bulk(CMD_START)
-                log(f"session cmd for next phase: ok")
-            except Sc2Error as exc:
-                log(f"session cmd: {exc} (continuing)")
 
     if wrote:
-        # single final reboot AFTER all blocks are staged+committed:
-        # 0x08 on the mesh (vendor loop position), then 0x08 on B for
-        # the CSR side. Give the last run-loader a moment to finish.
-        log("final reboot (mesh 0x08, then B 0x08)")
-        time.sleep(2.0)
+        # single commit for all staged blocks: 0x07 run-loader, 0x08,
+        # then the B-side reboot for the CSR chip.
+        log("commit staged blocks (0x07, 0x08)")
+        try:
+            alink.run_loader()
+            log("run-loader acked")
+        except (AirohaError, RawUsbError) as exc:
+            log(f"run-loader: {exc}")
         try:
             alink.verify()
             log("mesh 0x08 acked")

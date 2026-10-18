@@ -121,7 +121,7 @@ def test_sc2v2_streams_all_blocks_through_airoha():
     assert main.chunks == b""                       # B is inert for writes
     assert mesh.written == main_blob + vp_blob      # blocks 0+1 via A
     assert 0x06 not in [c for c in main.cmds]
-    assert main.cmds == [0x01, 0x0F, 0x0F, 0x0F, 0x08]  # version, per-phase starts, reboot
+    assert main.cmds == [0x01, 0x0F, 0x08]          # version, start, reboot
     # submesh block skipped on version match: no 0x06 for its bytes
     assert sub_blob not in mesh.written
 
@@ -160,17 +160,17 @@ def test_airo_ready_retries_flaky_interface():
     assert airo_ready(link, retries=5, delay=0) == (0, 4, 0, 0, 4)
 
 
-def test_sc2v2_apply_reset_at_run_loader_moves_to_next_block():
+def test_sc2v2_death_at_block_start_reopens_and_resends():
     from schuberth_dfu.rawusb import RawUsbError
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
     data, container, (main_blob, vp_blob, _) = sc2v2_container()
 
     class ResettingAiroha(FakeAiroha):
-        """Dies like the live device: USB error when the run-loader
-        commits the block and the interface re-enumerates."""
+        """Dies once, at the block-start cmd of block 0."""
         def write_report(self, d):
-            if d[2] == 0x07:
+            if d[2] == 0x05 and not getattr(self, "done", False):
+                self.done = True
                 raise RawUsbError("I/O error")
             return super().write_report(d)
 
@@ -179,8 +179,8 @@ def test_sc2v2_apply_reset_at_run_loader_moves_to_next_block():
     second = FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, first, container, data,
                         mesh_reopen=lambda: second) is True
-    assert first.written == main_blob      # all chunks, died at verify
-    assert second.written == vp_blob       # block applied: no re-send
+    assert first.written == b""              # died before any chunk
+    assert second.written == main_blob + vp_blob  # both blocks re-staged
 
 
 def test_sc2v2_midblock_death_resends_the_block():
