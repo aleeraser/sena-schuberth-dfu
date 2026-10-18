@@ -265,10 +265,19 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
             sm_ver = airo_ready(alink, log=log)
 
     if wrote:
-        log("reboot")
+        # single final reboot AFTER all blocks are staged+committed:
+        # 0x08 on the mesh (vendor loop position), then 0x08 on B for
+        # the CSR side. Give the last run-loader a moment to finish.
+        log("final reboot (mesh 0x08, then B 0x08)")
+        time.sleep(2.0)
+        try:
+            alink.verify()
+            log("mesh 0x08 acked")
+        except (AirohaError, RawUsbError) as exc:
+            log(f"mesh 0x08: {exc} (device likely rebooting)")
         main_handle.write_bulk(CMD_REBOOT)
         rep = main_handle.read_bulk(timeout_ms=1500)
-        log(f"cmd 0x08 reply: {rep[:8].hex() if rep else '-'}")
+        log(f"B 0x08 reply: {rep[:8].hex() if rep else '-'}")
     log("done")
     return wrote
 

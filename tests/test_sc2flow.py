@@ -160,17 +160,17 @@ def test_airo_ready_retries_flaky_interface():
     assert airo_ready(link, retries=5, delay=0) == (0, 4, 0, 0, 4)
 
 
-def test_sc2v2_apply_reset_at_verify_moves_to_next_block():
+def test_sc2v2_apply_reset_at_run_loader_moves_to_next_block():
     from schuberth_dfu.rawusb import RawUsbError
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
     data, container, (main_blob, vp_blob, _) = sc2v2_container()
 
     class ResettingAiroha(FakeAiroha):
-        """Dies like the live device: USB error when verify commits the
-        block and the interface re-enumerates."""
+        """Dies like the live device: USB error when the run-loader
+        commits the block and the interface re-enumerates."""
         def write_report(self, d):
-            if d[2] == 0x08:
+            if d[2] == 0x07:
                 raise RawUsbError("I/O error")
             return super().write_report(d)
 
