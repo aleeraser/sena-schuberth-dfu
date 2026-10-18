@@ -27,6 +27,9 @@ CMD_VERSION = 0x01            # reply payload 5 or 8 bytes; + [block idx]
 CMD_BLOCK_START = 0x05        # bare: open block transfer ("UPDATE START";
                               # live: slow, ~4 s — flash prep)
 CMD_WRITE = 0x06              # [3]=len(<=0x3A), [4..]=data; reply[4..5]=CRC16 LE
+CMD_RUNLOADER = 0x07          # SC2V2 per-block commit: runs the flash
+                              # loader on the staged block (shared-region
+                              # loop 0x10004150e: 00,05,06*,07,08)
 CMD_VERIFY = 0x08
 CMD_GET_DFU_RESULT = 0x0A     # reply[4] = result byte (informational)
 CMD_CHUNK_CRC = 0x5A          # [3]=2, [4..5]=chunk CRC16 LE (bulk mesh path)
@@ -113,9 +116,18 @@ class Link:
     def block_crc(self, crc: int) -> None:
         """Close the block transfer: cmd 0x5B, params [2, crc_lo, crc_hi]
         (running CRC-16/CCITT over the whole block). The device checks
-        it during VERIFY."""
+        it during VERIFY. 60S-style flow only — live SC2V2 rejects 0x5B
+        with status 2; it commits with RUN_LOADER (0x07) instead."""
         self.command(CMD_BLOCK_CRC,
                      bytes([2, crc & 0xFF, (crc >> 8) & 0xFF]))
+
+    def nop(self) -> None:
+        self.command(CMD_NOP)
+
+    def run_loader(self) -> None:
+        """SC2V2 per-block commit: run the flash loader on the staged
+        block (vendor shared-region loop sends 0x07 after the chunks)."""
+        self.command(CMD_RUNLOADER)
 
     def write_chunk(self, data: bytes) -> int:
         """Write one <=58-byte chunk; return the device's CRC-16 for it."""
@@ -133,12 +145,17 @@ class Link:
 
 def update_image(link: Link, data: bytes, image: Image,
                  progress: Optional[Callable[[int, int], None]] = None,
-                 log: Optional[Callable[[str], None]] = None) -> None:
+                 log: Optional[Callable[[str], None]] = None,
+                 close: str = "airoha") -> None:
     """Stream one container image through the Airoha block-update loop.
 
     Per chunk: write (cmd 6) and compare the device CRC-16 against ours;
-    keep a running CRC over the whole image. Then VERIFY (cmd 8) and
-    GET_DFU_RESULT (cmd 0x0A).
+    keep a running CRC over the whole image. Close sequence depends on
+    the device family:
+    - close="airoha" (60S-style): 0x5B block-CRC close, 0x08 verify,
+      0x0A result (informational);
+    - close="sc2v2" (confirmed live, shared-region loop 0x10004139c):
+      0x07 run-loader commit, 0x08 reboot; 0x5B is rejected (status 2).
     """
     blob = image.blob(data)
     running = 0
@@ -162,18 +179,22 @@ def update_image(link: Link, data: bytes, image: Image,
             progress(sent, len(blob))
     if log:
         log(f"block crc = {running:#06x}")
-    link.block_crc(running)
     from .rawusb import RawUsbError
     try:
-        link.verify()
-        result = link.get_dfu_result()
+        if close == "sc2v2":
+            link.run_loader()
+            link.verify()
+        else:
+            link.block_crc(running)
+            link.verify()
+            result = link.get_dfu_result()
+            # Vendor logs "GET_DFU_RESULT value[%d]" then "BLOCK %d
+            # UPDATE OK" without gating on the value; live SC2V2 answers
+            # 1 after applying a block. Informational only.
+            if log:
+                log(f"DFU result = {result}")
     except (RawUsbError, OSError) as exc:
         # every chunk landed with a matching CRC; if the link dies now
         # the device is applying the block (apply-reset), not rejecting
         # it — the flow treats this as "block done, interface gone".
-        raise AirohaResetError(f"link died at verify/result: {exc}") from exc
-    # Vendor logs "GET_DFU_RESULT value[%d]" then "BLOCK %d UPDATE OK"
-    # without gating on the value; live SC2V2 answers 1 after applying
-    # a block. Informational only.
-    if log:
-        log(f"DFU result = {result}")
+        raise AirohaResetError(f"link died at commit: {exc}") from exc
