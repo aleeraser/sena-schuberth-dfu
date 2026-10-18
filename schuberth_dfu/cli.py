@@ -158,7 +158,8 @@ def cmd_update(args) -> int:
         try:
             with RawHandle(0x3217) as main_h, RawHandle(0x3220) as mesh_h:
                 update_sc2v2(main_h, mesh_h, container, data, log=log,
-                             force=args.force)
+                             force=args.force,
+                             mesh_reopen=lambda: RawHandle(0x3220))
         except (RawUsbError, Sc2Error) as exc:
             print(f"SC2V2 flow failed: {exc}")
             return 1

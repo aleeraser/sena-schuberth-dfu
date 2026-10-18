@@ -147,9 +147,27 @@ def airo_ready(alink, *, retries: int = 13, delay: float = 1.5,
     raise Sc2Error("airoha interface never became ready")
 
 
+def _reopen_mesh(mesh_handle, mesh_reopen, log):
+    """The Airoha side re-enumerates when it applies a block (observed
+    live: verify on block 0 reset the 0x3220 interface). Close, wait for
+    it to come back, hand out a fresh handle."""
+    try:
+        mesh_handle.close()
+    except Exception:
+        pass
+    for i in range(13):
+        time.sleep(1.5)
+        try:
+            return mesh_reopen()
+        except Exception as exc:
+            log(f"  mesh reopen retry {i + 1}/13: {exc}")
+    raise Sc2Error("mesh interface never came back")
+
+
 def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                  *, log: Optional[Callable[[str], None]] = None,
-                 force: bool = False) -> bool:
+                 force: bool = False,
+                 mesh_reopen: Optional[Callable[[], object]] = None) -> bool:
     """SC2V2 flow — confirmed live 2026-10-18/19 (findings.md):
 
     - 0x3217 (transport B) answers version queries; 0x0F/0x12 return
@@ -167,7 +185,6 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
     log = log or (lambda s: None)
     link = MeshLink(main_handle)
     wrote = False
-
     ver = read_version(link)
     target = parse_container_version(container.version)
     log(f"main version: {'.'.join(map(str, ver))} -> target "
@@ -198,10 +215,25 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
             log(f"block {idx} version check: {exc} (continuing)")
         log(f"writing block {idx} type={image.type} size={image.size:#x} "
             f"name={image.name or '-'}")
-        update_image(alink, data, image,
-                     progress=lambda d, t: log(f"  {d * 100 // t}%")
-                     if d == t else None, log=log)
-        wrote = True
+        from .rawusb import RawUsbError
+        for attempt in (1, 2):
+            try:
+                update_image(alink, data, image,
+                             progress=lambda d, t: log(f"  {d * 100 // t}%")
+                             if d == t else None, log=log)
+                wrote = True
+                break
+            except (AirohaError, RawUsbError) as exc:
+                # the Airoha side re-enumerates when it applies a block
+                # (observed live at verify of block 0); re-open and
+                # re-send this block once (staging is idempotent).
+                log(f"block {idx} attempt {attempt} failed: {exc}")
+                if attempt == 2 or mesh_reopen is None:
+                    raise Sc2Error(f"block {idx} failed: {exc}") from exc
+                log("reopening mesh interface (device may have reset)")
+                mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
+                alink = AiroLink(mesh_handle, timeout=20.0)
+                sm_ver = airo_ready(alink, log=log)
 
     if wrote:
         log("reboot")

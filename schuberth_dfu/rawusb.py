@@ -109,6 +109,12 @@ class RawHandle:
 
     # --- transport B "bulk" (0x3217): interrupt endpoints ----------------
 
+    def _xfer(self, fn, *args):
+        try:
+            return fn(*args)
+        except self._core.USBError as exc:
+            raise RawUsbError(f"USB transfer failed: {exc}") from exc
+
     def write_bulk(self, cmd: int, params: bytes = b"") -> None:
         if self._ep_out is None:
             raise RawUsbError("no interrupt OUT endpoint on this interface")
@@ -116,7 +122,7 @@ class RawHandle:
         buf[0] = 0x01
         buf[1] = cmd
         buf[2:2 + len(params)] = params
-        self._dev.write(self._ep_out, bytes(buf), 5000)
+        self._xfer(self._dev.write, self._ep_out, bytes(buf), 5000)
 
     def read_bulk(self, timeout_ms: int = 3000) -> bytes:
         """Next meaningful pushed report [0x02, echo, status, payload...].
@@ -143,13 +149,13 @@ class RawHandle:
     def write_report(self, data: bytes) -> None:
         """SET_REPORT(OUTPUT, id1); `data` is the 62-B frame whose first
         byte duplicates the report ID (vendor convention)."""
-        self._dev.ctrl_transfer(0x21, 0x09,
-                                (RT_OUTPUT << 8) | AIRO_OUT_RID,
-                                self.iface, bytes(data), 5000)
+        self._xfer(self._dev.ctrl_transfer, 0x21, 0x09,
+                   (RT_OUTPUT << 8) | AIRO_OUT_RID,
+                   self.iface, bytes(data), 5000)
 
     def feature_get(self, report_id: int = AIRO_IN_RID,
                     length: int = AIRO_FRAME_LEN) -> bytes:
         """GET_REPORT(FEATURE, id2) poll; device echoes id as byte 0."""
-        return bytes(self._dev.ctrl_transfer(
-            0xA1, 0x01, (RT_FEATURE << 8) | report_id,
-            self.iface, length, 2000))
+        return bytes(self._xfer(self._dev.ctrl_transfer,
+                                0xA1, 0x01, (RT_FEATURE << 8) | report_id,
+                                self.iface, length, 2000))
