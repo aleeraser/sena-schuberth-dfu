@@ -20,13 +20,18 @@ from .crc import crc16_ccitt
 
 # Command numbers (feature path usage observed in threadMethodUpdate:).
 CMD_NOP = 0x00
-CMD_VERSION = 0x01            # reply payload 5 or 8 bytes
-CMD_BLOCK_VERSION = 0x05      # per-block version check (Airoha BT flow)
+CMD_VERSION = 0x01            # reply payload 5 or 8 bytes; + [block idx]
+                              # param = per-block version check (vendor
+                              # "BLOCK %d VERSION CHECK"; live SC2V2
+                              # answers the same 5 bytes for any param)
+CMD_BLOCK_START = 0x05        # bare: open block transfer ("UPDATE START";
+                              # live: slow, ~4 s — flash prep)
 CMD_WRITE = 0x06              # [3]=len(<=0x3A), [4..]=data; reply[4..5]=CRC16 LE
 CMD_VERIFY = 0x08
-CMD_GET_DFU_RESULT = 0x0A     # reply[4] = result byte
+CMD_GET_DFU_RESULT = 0x0A     # reply[4] = result byte (informational)
 CMD_CHUNK_CRC = 0x5A          # [3]=2, [4..5]=chunk CRC16 LE (bulk mesh path)
-CMD_BLOCK_CRC = 0x5B          # [3]=2, [4..5]=running block CRC16 LE
+CMD_BLOCK_CRC = 0x5B          # [3]=2, [4..5]=running block CRC16 LE:
+                              # closes the block; device checks it at VERIFY
 
 CHUNK_LEN = 0x3A              # 58 bytes per write (findings.md)
 
@@ -94,8 +99,23 @@ class Link:
         return rep[4:9]                      # 5 version bytes (extra=5)
 
     def block_version(self, block_idx: int) -> bytes:
-        rep = self.command(CMD_BLOCK_VERSION, bytes([block_idx]))
+        """Vendor 'BLOCK %d VERSION CHECK': cmd 0x01 with the block idx
+        as param; 5-byte version payload (live SC2V2: same bytes for
+        every param)."""
+        rep = self.command(CMD_VERSION, bytes([block_idx]))
         return rep[4:9]
+
+    def start_block(self) -> None:
+        """Vendor 'BLOCK %d UPDATE START': bare cmd 0x05. Slow on live
+        devices (~4 s, flash prep)."""
+        self.command(CMD_BLOCK_START)
+
+    def block_crc(self, crc: int) -> None:
+        """Close the block transfer: cmd 0x5B, params [2, crc_lo, crc_hi]
+        (running CRC-16/CCITT over the whole block). The device checks
+        it during VERIFY."""
+        self.command(CMD_BLOCK_CRC,
+                     bytes([2, crc & 0xFF, (crc >> 8) & 0xFF]))
 
     def write_chunk(self, data: bytes) -> int:
         """Write one <=58-byte chunk; return the device's CRC-16 for it."""
@@ -142,6 +162,7 @@ def update_image(link: Link, data: bytes, image: Image,
             progress(sent, len(blob))
     if log:
         log(f"block crc = {running:#06x}")
+    link.block_crc(running)
     from .rawusb import RawUsbError
     try:
         link.verify()

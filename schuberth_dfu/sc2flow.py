@@ -216,9 +216,12 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
         for attempt in (1, 2):
             try:
                 try:
-                    alink.block_version(idx)
+                    bver = tuple(alink.block_version(idx))
+                    log(f"block {idx} version check: "
+                        f"{'. '.join(map(str, bver))}")
                 except AirohaError as exc:
                     log(f"block {idx} version check: {exc} (continuing)")
+                alink.start_block()
                 update_image(alink, data, image,
                              progress=lambda d, t: log(f"  {d * 100 // t}%")
                              if d == t else None, log=log)
