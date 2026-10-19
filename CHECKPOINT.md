@@ -17,10 +17,12 @@ gate" and "session handshake" model was a misread — the 0x20/0x21/0x22/
 per-image `0x05 [2=flag] / 0x06 chunks / 0x07` loop for ALL container
 images over the 0x3217 interface, one `0x08` at the end (details §5/§6).
 Remaining work: other device families — ticket 08
-(SC1A/SC10U/SC1S/SC1M) is RE-searched and implemented (`update_sc1`,
-sim-tested, **live hw validation pending**); tickets 09 (QCC/PARTDATA
-container) and 10 (PRISM, BT transport) are open; 07 (Airoha block
-table) is offline research.
+(SC1A/SC10U/SC1S/SC1M) and ticket 09 (QCC UCOM3/6R/7R + APPUHDRV5
+grammar) are RE-searched and implemented (`update_sc1`, `update_qcc`;
+sim-tested, **live hw validation pending**); ticket 10 (PRISM) is
+answered — updates are drop-file copies to a USB MSC volume, wrapper
+decoded, the final transform needs real hardware so flashing stays
+unwired; 07 (Airoha block table) is offline research.
 
 ## 2. Quickstart (fresh shell)
 

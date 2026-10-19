@@ -152,6 +152,7 @@ class FakeSc2V2:
         self.staging = bytearray()      # current image staging buffer
         self.applied = []               # committed image blobs, in order
         self.reboots = 0
+        self.eof = False                  # saw a 0x0E writeLAST
         self._pending = None
         self._busy = False
 
@@ -168,9 +169,11 @@ class FakeSc2V2:
             rep[3:7] = bytes(list(self.version))
         elif cmd == 0x05:
             self.staging = bytearray()
-        elif cmd == 0x06:
+        elif cmd in (0x06, 0x0E):        # 0x0E = writeLAST (QCC family)
             length = struct.unpack(">H", params[:2])[0]
             self.staging += params[2:2 + length]
+            if cmd == 0x0E:
+                self.eof = True
             if self.busy_first_chunk:
                 self._busy, self.busy_first_chunk = True, False
             if self.refuse_at is not None and len(self.staging) >= self.refuse_at:
@@ -215,3 +218,38 @@ class FakeSc1(FakeSc2V2):
                 rep = bytearray(self._pending)
                 rep[2] = 2
                 self._pending = bytes(rep)
+
+
+class FakeQcc(FakeSc2V2):
+    """UCOM3-class QCC device (ticket 09 static model): requires
+    0x03 [2]=5 (ENTER_DNLD_MODE) before staging is accepted, answers 0x13,
+    and demands a 0x0E writeLAST per staged image (0x07 commit refuses
+    with status 2 if the staged image never saw its EOF marker)."""
+
+    def __init__(self, version=(1, 3, 0, 0), target=(1, 4, 1, 0),
+                 refuse_enter_dnld=False, **kw):
+        super().__init__(version=version, target=target, **kw)
+        self.refuse_enter_dnld = refuse_enter_dnld
+        self.dnld_mode = False
+        self.commits_without_eof = 0
+
+    def write_bulk(self, cmd, params=b""):
+        if cmd == 0x03:
+            self.cmds.append(cmd)
+            rep = bytearray(16)
+            rep[0], rep[1] = 0x02, cmd
+            rep[2] = 2 if self.refuse_enter_dnld else 0
+            self.dnld_mode = not self.refuse_enter_dnld and params[:1] == b"\x05"
+            self._pending = bytes(rep)
+            return
+        if cmd == 0x07 and not self.eof:
+            self.commits_without_eof += 1
+            self.cmds.append(cmd)
+            rep = bytearray(16)
+            rep[0], rep[1] = 0x02, cmd
+            rep[2] = 2
+            self._pending = bytes(rep)
+            return
+        super().write_bulk(cmd, params)
+        if cmd == 0x05:
+            self.eof = False          # new image: EOF marker resets

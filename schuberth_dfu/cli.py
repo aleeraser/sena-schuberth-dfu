@@ -101,7 +101,7 @@ def cmd_version(args) -> int:
 
 def cmd_update(args) -> int:
     from .transport import Handle, scan  # lazy: hidapi only for hardware
-    from .catalog import (FAMILY_AIROHA, FAMILY_CSR, FAMILY_SC1,
+    from .catalog import (FAMILY_AIROHA, FAMILY_CSR, FAMILY_QCC, FAMILY_SC1,
                           family_for_pid)
 
     devices = scan()
@@ -135,7 +135,7 @@ def cmd_update(args) -> int:
     print(f"container {container.version}: "
           + ", ".join(f"{i.name or i.type}" for i in container.images))
 
-    if fam not in (FAMILY_AIROHA, FAMILY_CSR, FAMILY_SC1):
+    if fam not in (FAMILY_AIROHA, FAMILY_CSR, FAMILY_SC1, FAMILY_QCC):
         print(f"family {fam!r} update flow not implemented")
         return 2
 
@@ -147,17 +147,21 @@ def cmd_update(args) -> int:
     def log(msg: str) -> None:
         print(msg, flush=True)
 
-    if dev.product_id == 0x3217 or fam == FAMILY_SC1:
-        # SC2V2/SC1: kernel HID path unusable (malformed descriptors) ->
+    if dev.product_id == 0x3217 or fam in (FAMILY_SC1, FAMILY_QCC):
+        # SC2V2/SC1/QCC: kernel HID path unusable (malformed descriptors) ->
         # raw USB control/interrupt transfers; needs the udev rule or root
         # (hid-generic detach). The whole update runs on the main
         # interface (companion PIDs like 0x3220 are not touched).
         from .rawusb import RawHandle, RawUsbError
         if dev.product_id == 0x3217:
             from .sc2flow import Sc2Error, update_sc2v2 as update_flow
-        else:
+        elif fam == FAMILY_SC1:
             from .sc2flow import Sc2Error, update_sc1 as update_flow
             log("SC1 family: flow derived from the vendor binary "
+                "(static model); not yet hardware-verified — report issues")
+        else:
+            from .sc2flow import Sc2Error, update_qcc as update_flow
+            log("QCC family: flow derived from the vendor binary "
                 "(static model); not yet hardware-verified — report issues")
         try:
             update_flow(RawHandle(dev.product_id), container, data,

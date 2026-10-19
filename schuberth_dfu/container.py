@@ -106,6 +106,56 @@ def is_qcc_appu(data: bytes) -> bool:
     return QCC_MAGIC in data[:0x200]
 
 
+QCC_RECORD_MAGIC = b"PARTDATA"
+QCC_FOOTER_MAGIC = b"APPUPFTR"
+
+
+@dataclass(frozen=True)
+class QccRecord:
+    kind: int                 # 0 = key block, 1 = "Image" descriptor, 9 = data
+    payload: bytes            # record bytes after the 16-byte header
+
+
+@dataclass(frozen=True)
+class QccPartitions:
+    """APPUHDR5 partition image (decoded live from ucom3/ucom6r containers,
+    ticket 09): fixed header, big-endian PARTDATA records, APPUPFTR hash
+    table. The vendor host forwards the whole blob to the device untouched
+    (device-side validates it); we parse it for reporting and sanity checks.
+    """
+    chip: str                 # e.g. "QCC512Xx"
+    records: List[QccRecord]
+    footer_hashes: List[bytes]  # 16 x 16-byte entries, algorithm keyed/n.i.
+
+    @property
+    def data_blob(self) -> Optional[bytes]:
+        for r in self.records:
+            if r.kind == 9:
+                return r.payload
+        return None
+
+
+def parse_qcc_partitions(blob: bytes) -> QccPartitions:
+    """Parse one APPUHDR5 image (a SENADRIVER container image() blob)."""
+    if blob[:8] != QCC_MAGIC:
+        raise ContainerError(f"not an APPUHDRV5 image (magic {blob[:8]!r})")
+    chip = blob[0x0C:0x18].split(b"\x00")[0].decode("ascii", "replace")
+    x = 0x3C
+    records: List[QccRecord] = []
+    while blob[x:x + 8] == QCC_RECORD_MAGIC:
+        total, kind = struct.unpack_from(">II", blob, x + 8)
+        if total < 4 or x + 12 + total > len(blob):
+            raise ContainerError(f"bad PARTDATA record at {x:#x}")
+        records.append(QccRecord(kind=kind, payload=blob[x + 16:x + 12 + total]))
+        x += 12 + total
+    if blob[x:x + 8] != QCC_FOOTER_MAGIC:
+        raise ContainerError(f"expected APPUPFTR footer at {x:#x}")
+    table_len, = struct.unpack_from(">I", blob, x + 8)
+    hashes = [blob[x + 12 + 16 * i:x + 28 + 16 * i]
+              for i in range(table_len // 16)]
+    return QccPartitions(chip=chip, records=records, footer_hashes=hashes)
+
+
 def parse_prism_container(data: bytes, expected_name: str,
                           crc32: Callable[[bytes], int]) -> bytes:
     """Validate the PRISM simple container and return the payload.
@@ -122,3 +172,59 @@ def parse_prism_container(data: bytes, expected_name: str,
     if crc32(data[:-4]) != stored:
         raise ContainerError("CRC-32 footer mismatch")
     return data[:len(data) - 4]
+
+
+@dataclass(frozen=True)
+class PrismUpdateImage:
+    """PRISM-v1.0.0.0.img wrapper (ticket 10, decoded live from the server
+    sample): PRISM updates are NOT a packet protocol — the app copies
+    drop-files (`__prism_dfu_bluetooth__.img`, `__prism_firmware__.bin`)
+    onto the device's USB mass-storage volume (strings:
+    getPrismDiskPathWithDevice:, checkPrismUpdateComplete, endPrismUpdate,
+    MISC/version.conf; dialog: "Disconnect the USB cable from the PRISM /
+    Wait until the PRISM completes update and powers off / Connect USB
+    cable ... and then power on it"). This wrapper is the download
+    artifact the drop-files are derived from.
+
+    Decoded header (u32 LE unless noted):
+      0x00  version string "v0.0.0.0" (28 B)
+      0x1C  pid (0x3020)
+      0x20  component count (2)
+      0x30  component 0 size (0x131eb0) ; 0x4C/0x50: main component
+            offset+size (they tile the file exactly)
+      0x64  sub-header magic "CSR-dfu2" (Bluetooth-module DFU image —
+            the "__prism_dfu_bluetooth__" component), 0x6E size u32,
+            0x74 72-B space-padded name "PRISM#3020"
+    Payload layout beyond the header and the wrapper->drop-file
+    derivation are UNRESOLVED (needs PRISM hardware to observe what the
+    app writes to the disk volume) — reader only; do not auto-flash.
+    """
+    version: str
+    pid: int
+    count: int
+    comp0_size: int
+    bt_size: int
+    bt_name: str
+    main_offset: int           # second (camera) component start
+    main_size: int
+
+
+def parse_prism_update_image(data: bytes) -> PrismUpdateImage:
+    """Read the PRISM download wrapper header (see PrismUpdateImage)."""
+    version = data[:0x1C].split(b"\x00")[0].decode("ascii", "replace")
+    pid, count = struct.unpack_from("<II", data, 0x1C)
+    if pid != 0x3020:
+        raise ContainerError(f"not a PRISM image (pid {pid:#06x})")
+    if data[0x64:0x6C] != b"CSR-dfu2":
+        raise ContainerError(f"missing CSR-dfu2 sub-header at 0x64 "
+                             f"({data[0x64:0x6C]!r})")
+    comp0_size, = struct.unpack_from("<I", data, 0x30)
+    bt_size, = struct.unpack_from("<I", data, 0x6E)
+    name = data[0x74:0x74 + 72].decode("ascii", "replace").strip(" \x00")
+    main_offset, main_size = struct.unpack_from("<II", data, 0x4C)
+    if main_offset + main_size > len(data):
+        raise ContainerError("component table exceeds file")
+    return PrismUpdateImage(version=version, pid=pid, count=count,
+                            comp0_size=comp0_size, bt_size=bt_size,
+                            bt_name=name, main_offset=main_offset,
+                            main_size=main_size)

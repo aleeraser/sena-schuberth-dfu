@@ -61,7 +61,8 @@ Product names are the internal catalog keys (see
 | SC1A / SC10U / SC1S | 0x5622 / 0x5623 / 0x5624 | SC1 | static vendor model implemented + sim-tested; live hw test pending |
 | SC1M | 0x6400 | SC1 | same generic flow (device_id from its v1.1 container); hw test pending |
 | ST1/S1/M1 EVO/C30/… | various | Airoha | command+block loop implemented (untested on hw) |
-| PRISM | 0x3020 | camera | later (ticket 10) |
+| UCOM3/3HD/6R/7R | 0x3340/0x3341/0x3430/0x3420 | QCC | static vendor model + APPUHDR5 grammar; hw test pending |
+| PRISM | 0x3020 | disk-copy | container decoded; update = drop-file copy to MSC volume — flow intentionally not wired yet (needs hw) |
 
 ## Tests
 

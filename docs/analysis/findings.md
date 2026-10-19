@@ -313,9 +313,35 @@ read error → fail); `sub_100108c1b` = write + blocking echo read;
 0x10013c855 = `sleep(edi)` thunk. The vendor app has **no timeouts
 anywhere** in this loop — all pacing is device-driven.
 
-## SC1 family flow (ticket 08, 2026-10-20) [derived from threadMethodUpdate: exclusion chain 0x1000443a0–0x1000446c0 → 0x1000446c6; static model, live test pending]
+## QCC family (UCOM3/6R/7R) + APPUHDR5 grammar (ticket 09, 2026-10-20) [decoded from live server samples + threadMethodUpdate 0x1000337c5–0x100037432; static model, live test pending]
 
-SC1A (0x5622) / SC10U (0x5623) / SC1S (0x5624) — plus the 0x55xx/0x30xx/
+Outer container is SENADRIVER as usual (UCOM3 device_id **0x3340**, 2
+images). INNER grammar of both image blobs: `APPUHDR5` (all-BE):
+header (chip "QCC512Xx") + `PARTDATA` records (`magic|u32BE total|u32BE
+kind|payload`; kind 0 key-16B, kind 1 descriptor w/ "Image\x01"+8-byte
+TLVs ending "END\0"+16B hash, kind 9 main partition, kind 7 voice
+partition) + `APPUPFTR` footer (16 keyed hash entries — not md5/sha of
+anything we tried; device-side verification). Flow: `0x01` → `0x03
+[2]=05` ENTER_DNLD_MODE → `0x13` preflight → per image `0x05 [2=flag]`
+→ `0x06` chunks with **final chunk 0x0E** → `0x07` → `0x08` → `0x0A`;
+[B][0..9] step logs. Implemented `update_qcc` (family qcc = 0x3340/
+0x3341/0x3420/0x3430), sim-tested only; see ticket 09 ## Answer.
+
+## PRISM = disk-drop updates (ticket 10, 2026-10-20) [answered from binary strings + live sample; implementation intentionally unwired, needs hardware]
+
+PRISM (0x3020) is NOT updated over a packet transport: the app copies
+drop-files (`__prism_dfu_bluetooth__.img`, `__prism_firmware__.bin`) to
+the device's USB mass-storage volume (same scheme as the Sena camera
+line: `__10c_firmware__.bin`/`AmbaSysFW_*`/`MISC/version.conf`; helpers
+getPrismDiskPathWithDevice:/checkPrismUpdateComplete/endPrismUpdate).
+Download artifact wrapper decoded (`parse_prism_update_image`): version
+string, pid 0x3020, 2 tiled components (0x131F14 + 0xC8C000 == file
+size), `CSR-dfu2` BT sub-image named "PRISM#3020". Wrapper→drop-file
+transform unresolved until hardware is available. The 0x55xx handshake
+region is NOT the PRISM flow (earlier guess corrected). See ticket 10
+## Answer.
+
+## SC1 family flow (ticket 08, 2026-10-20) [derived from threadMethodUpdate: exclusion chain 0x1000443a0–0x1000446c0 → 0x1000446c6; static model, live test pending]SC1A (0x5622) / SC10U (0x5623) / SC1S (0x5624) — plus the 0x55xx/0x30xx/
 0x6210/0x6400/0x53xx/0x59xx Sena lines — join the generic continuation
 at **0x1000446c6**: open slot-0 handle (sub_1001086ec) → optional aux
 "Airoha-style" slot-1 handle (sub_100108544, guarded) → `0x01` version

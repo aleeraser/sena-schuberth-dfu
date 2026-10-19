@@ -29,7 +29,7 @@ from __future__ import annotations
 import time
 from typing import Callable, List, Optional
 
-from .container import SENAContainer
+from .container import SENAContainer, parse_qcc_partitions
 from .transport import Device, Handle, scan
 
 DFU_MESH_PIDS = frozenset({0x3160, 0x3220, 0x6500, 0x6501, 0x6511})
@@ -50,6 +50,10 @@ CMD_RV = 0x12
 CMD_SESSION_START = 0x20
 CMD_BT_MODULE_FIND = 0x21
 CMD_ARM_MESH = 0x50
+# QCC (UCOMx) family extras (ticket 09, static model):
+CMD_ENTER_DNLD = 0x03         # with [2]=5: "COMMAND_ENTER_DNLD_MODE"
+CMD_PREFLIGHT = 0x13
+CMD_WRITE_LAST = 0x0E
 
 CSR_CHUNK_LEN = 0x3FB         # 1019 B payload (vendor 0x100045964: mov eax,0x3fb)
 MESH_CHUNK_LEN = 0x3D         # 61 bytes (0x100041452)
@@ -173,11 +177,13 @@ def airo_ready(alink, *, retries: int = 13, delay: float = 1.5,
 
 
 def _stage_and_commit(link: MeshLink, images, data: bytes,
-                      log: Callable[[str], None]) -> None:
+                      log: Callable[[str], None], *,
+                      last_cmd: Optional[int] = None) -> None:
     """Vendor per-image CSR download loop, shared by SC2V2 (0x10005d2b0)
     and SC1 (0x10004cb34): 0x05 [2=flag], 0x06 chunks [lenBE16 data]
     with echo-matched busy-ack, 0x07 commit. Aborts on the first ack
-    with status != 0 — before any commit."""
+    with status != 0 — before any commit. The QCC family (ticket 09)
+    marks the final chunk with `last_cmd` (0x0E) instead."""
     for idx, image in enumerate(images):
         blob = image.blob(data)
         log(f"staging image {idx} {image.name or '-'} type={image.type} "
@@ -186,8 +192,10 @@ def _stage_and_commit(link: MeshLink, images, data: bytes,
         off = 0
         while off < len(blob):
             chunk = blob[off:off + CSR_CHUNK_LEN]
-            link.bulk(CMD_WRITE, len(chunk).to_bytes(2, "big") + chunk,
-                      echo=True)
+            cmd = CMD_WRITE
+            if last_cmd is not None and off + len(chunk) >= len(blob):
+                cmd = last_cmd
+            link.bulk(cmd, len(chunk).to_bytes(2, "big") + chunk, echo=True)
             off += len(chunk)
             if off == len(blob):
                 log(f"  image {idx}: {len(blob)} B staged")
@@ -306,6 +314,71 @@ def update_sc1(main_handle, container, data: bytes,
         log(f"reboot reply: {exc} (device restarts on commit)")
     time.sleep(1)
     link = _wait_after_reboot(main_handle, link, reopen, log)
+    new = read_version(link, echo=True)
+    log(f"main version now: {'.'.join(map(str, new))}")
+    return True
+
+
+def update_qcc(main_handle, container, data: bytes,
+               *, log: Optional[Callable[[str], None]] = None,
+               force: bool = False,
+               reopen: Optional[Callable[[], object]] = None) -> bool:
+    """QCC family (UCOM3 0x3340 / UCOM3HD 0x3341 / UCOM6R 0x3430 /
+    UCOM7R 0x3420), ticket 09 static model of threadMethodUpdate
+    0x1000337c5-0x100037432 (NOT yet hardware-verified):
+
+      0x01 version -> compare
+      0x03 [2]=5   COMMAND_ENTER_DNLD_MODE (hard, 0x1000348a4)
+      0x13 [2]=0   preflight (best-effort, 0x100034eb2)
+      per image (UCOM containers: APPUHDR5 main .bin + vp.bin):
+          0x05 [2=flag] / 0x06 chunks / LAST chunk 0x0E / 0x07 commit
+          (0x1000350a1-0x1000351f5: writeLAST switch 0x100035113/3512a)
+      0x08 reboot -> 0x0A result -> reopen.
+
+    The main image is an APPUHDRV5 partition blob (container.
+    parse_qcc_partitions) forwarded untouched; the device validates it.
+    Branch uncertainty between the QCC variants (BT-only / BT+VP / EDN,
+    cf. the "QCC only BT Update Start" strings) is documented in ticket 09.
+    """
+    log = log or (lambda s: None)
+    link = MeshLink(main_handle)
+    ver = read_version(link, echo=True)
+    target = parse_container_version(container.version)
+    log(f"main version: {'.'.join(map(str, ver))} -> target "
+        f"{'.'.join(map(str, target))}")
+    if ver == target and not force:
+        log("main: VERSION IS SAME, UPDATE SKIP")
+        return False
+
+    for image in container.images:
+        blob = image.blob(data)
+        if blob[:8] == b"APPUHDR5":
+            parts = parse_qcc_partitions(blob)
+            log(f"{image.name}: {parts.chip} partition image, "
+                f"{len(parts.records)} PARTDATA records "
+                f"(kinds {[r.kind for r in parts.records]})")
+
+    link.bulk(CMD_ENTER_DNLD, b"\x05", echo=True)   # hard
+    log("ENTER_DNLD_MODE ok")
+    try:
+        link.bulk(CMD_PREFLIGHT, echo=True)
+    except Sc2Error as exc:
+        log(f"preflight 0x13: {exc} (best-effort, continuing)")
+
+    _stage_and_commit(link, container.images, data, log,
+                      last_cmd=CMD_WRITE_LAST)
+
+    try:
+        link.bulk(CMD_REBOOT, b"\x00", echo=True)
+    except Sc2Error as exc:
+        log(f"reboot reply: {exc} (device restarts on commit)")
+    time.sleep(2)
+    link = _wait_after_reboot(main_handle, link, reopen, log)
+    try:
+        rep = link.bulk(CMD_RESULT, echo=True)
+        log(f"DFU result: {rep[3] if len(rep) > 3 else '?'}")
+    except Sc2Error as exc:
+        log(f"result query: {exc}")
     new = read_version(link, echo=True)
     log(f"main version now: {'.'.join(map(str, new))}")
     return True
