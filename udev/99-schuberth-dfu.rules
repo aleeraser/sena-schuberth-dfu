@@ -1,3 +1,8 @@
 # SCHUBERTH/SENA headsets in DFU mode (VID 0x092B = Airoha Technology).
 # Install as /etc/udev/rules.d/99-schuberth-dfu.rules and plug in the device.
+#
+# The "usb" line covers the raw usbfs nodes (/dev/bus/usb/...) used by the
+# SC2V2 raw-USB path (RawHandle: interrupt EPs + kernel-driver detach);
+# "hidraw" covers the kernel-HID path (transport.Handle). Group: plugdev.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="092b", MODE="0660", GROUP="plugdev"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="092b", MODE="0660", GROUP="plugdev"

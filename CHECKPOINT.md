@@ -25,15 +25,20 @@ decision (ticket 03).
 cd /home/alessandro/git/reverse-engineer/schuberth-firmware-updater
 # venv (rebuild if gone): python3 -m venv /tmp/opencode/venv-schuberth
 #   /tmp/opencode/venv-schuberth/bin/pip install -e .[dev]
-# USB access needs root; pkexec works from the agent shell (polkit GUI
-# prompt on the user's desktop). pkexec resets cwd → always absolute paths.
-pkexec /tmp/opencode/venv-schuberth/bin/schuberth-dfu version
-pkexec /tmp/opencode/venv-schuberth/bin/schuberth-dfu update --image /home/alessandro/git/reverse-engineer/schuberth-firmware-updater/firmware/sc2v2-2.4.0.0.img --yes
+# USB access: udev rule installed 2026-10-19 (see below) -> NO root needed
+# on this machine. (On a fresh machine: sudo cp udev/99-schuberth-dfu.rules
+# /etc/udev/rules.d/ && sudo udevadm control --reload, replug; or use
+# pkexec for one-off root runs — absolute paths, cwd resets.)
+/tmp/opencode/venv-schuberth/bin/schuberth-dfu version
+/tmp/opencode/venv-schuberth/bin/schuberth-dfu update --image /home/alessandro/git/reverse-engineer/schuberth-firmware-updater/firmware/sc2v2-2.4.0.0.img --yes
 ```
 
-udev rules for hidraw are installed (`udev/99-schuberth-dfu.rules`) but
-the SC2V2 path uses **pyusb raw USB** (hidraw/hidapi are unusable here,
-see §5), which needs root (it detaches hid-generic).
+udev rules are installed on this machine (`/etc/udev/rules.d/99-schuberth-dfu.rules`,
+from `udev/99-schuberth-dfu.rules` — now covers **both** `usb` (raw usbfs
+nodes for the SC2V2 RawHandle path incl. hid-generic detach) and `hidraw`,
+MODE 0660 GROUP plugdev; user is in plugdev). Verified rootless:
+detect/version/update all run without pkexec. The SC2V2 path still uses
+**pyusb raw USB** (hidraw/hidapi are unusable there, see §5) — just not root.
 
 Device must be plugged in: `lsusb -d 092b:` → expect `092b:3217` (SC2)
 and `092b:3220` (Airoha Headset). If 0x3217 stops answering (status
@@ -208,7 +213,7 @@ Live CLI on our unit now prints exactly:
 headset's main system must be powered on with a working battery…`
 
 ### Next steps (in order)
-1. Optional regression: re-run `pkexec …/schuberth-dfu update --image
+1. Optional regression: re-run `…/schuberth-dfu update --image
    …/firmware/sc2v2-2.4.0.0.img --yes` on the now-2.4.0.0 unit (same
    version → should print SKIP; with --force it should re-flash cleanly).
    Nothing else stands between us and "SC2V2 supported" — the CLI flow
@@ -255,9 +260,12 @@ headset's main system must be powered on with a working battery…`
 
 ## 9. Operational gotchas
 
-- pkexec: absolute paths only (cwd resets to /root); auth dialog on
-  user's desktop; auth cache expires (~ask user to click Authenticate;
-  if a pkexec-launched job logs nothing, it's waiting on the dialog).
+- USB access on this machine is passwordless since 2026-10-19 (udev rule
+  installed; user in plugdev). pkexec remains the fallback on machines
+  without the rule: absolute paths only (cwd resets to /root); auth
+  dialog on user's desktop; auth cache expires (~ask user to click
+  Authenticate; if a pkexec-launched job logs nothing, it's waiting on
+  the dialog). Orphaned root probes: `pkexec kill -9 <pid>`.
 - One process can hold the device: EBUSY(16) on ctrl transfers = the
   background update job is still running.
 - B-side reads return **stale pushed replies** right after opening the
