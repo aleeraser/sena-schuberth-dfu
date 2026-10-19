@@ -134,50 +134,61 @@ class FakeSc2:
 
 
 class FakeSc2V2:
-    """0x3217 raw-USB model per vendor-static analysis + live probing
-    (2026-10-19): pushed EP1 replies [0x02, echo cmd, status, payload...];
-    frames are [01 cmd 00 ...] zero-padded. Session commands 0x20/0x21/0x22
-    answer status 2 unless `powered_on` (live charge-mode device with a
-    dead battery answers 2). CSR chunks [01 06 lenBE16 data] stage into
-    .staging; 0x07 commits the staged image into .applied; 0x08 answers
-    nothing (device restarts)."""
+    """0x3217 raw-USB model, LIVE-VERIFIED flow (csr11, 2026-10-19: real
+    device updated 2.3.2.1 -> 2.4.0.0). Replies push [0x02, echo cmd,
+    status, payload...]; 0x05 [2=flag] starts staging one image, 0x06
+    chunks [lenBE16 data] append (status 2 = refused, [2]=1 = busy),
+    0x07 commits the staged image, 0x08 reboots: version becomes
+    `target` after reboot once at least one image was committed.
+    Session cmds (0x20/0x21/0x22) do not exist on this PID."""
 
-    def __init__(self, version=(2, 3, 2, 1), powered_on=True):
+    def __init__(self, version=(2, 3, 2, 1), target=(2, 4, 0, 0),
+                 busy_first_chunk=False, refuse_at=None):
         self.version = version
-        self.powered_on = powered_on
+        self.target = target
+        self.busy_first_chunk = busy_first_chunk
+        self.refuse_at = refuse_at      # staged byte total -> ack status 2
         self.cmds = []
-        self.staging = bytearray()
-        self.applied = []          # one entry per committed image
+        self.staging = bytearray()      # current image staging buffer
+        self.applied = []               # committed image blobs, in order
         self.reboots = 0
         self._pending = None
+        self._busy = False
 
     def close(self):
         pass
 
     def write_bulk(self, cmd, params=b""):
         self.cmds.append(cmd)
-        if cmd == 0x08:
-            self._pending = None            # no reply: device restarts
-            self.reboots += 1
-            return
         rep = bytearray(16)
         rep[0] = 0x02
         rep[1] = cmd
         rep[2] = 0
         if cmd == 0x01:
             rep[3:7] = bytes(list(self.version))
-        elif cmd in (0x20, 0x21, 0x22, 0x0F, 0x10, 0x12):
-            if not self.powered_on:
-                rep[2] = 2                  # live: charge-mode refusal
         elif cmd == 0x05:
             self.staging = bytearray()
-        elif cmd in (0x06, 0x0E):
+        elif cmd == 0x06:
             length = struct.unpack(">H", params[:2])[0]
             self.staging += params[2:2 + length]
+            if self.busy_first_chunk:
+                self._busy, self.busy_first_chunk = True, False
+            if self.refuse_at is not None and len(self.staging) >= self.refuse_at:
+                rep[2] = 2              # refused mid-staging
         elif cmd == 0x07:
             self.applied.append(bytes(self.staging))
             self.staging = bytearray()
+        elif cmd == 0x08:
+            self.reboots += 1
+            if self.applied:
+                self.version = self.target    # self-reboot applies the update
         self._pending = bytes(rep)
 
     def read_bulk(self, timeout_ms=3000):
-        return self._pending or b""
+        rep = self._pending
+        if self._busy and rep is not None:
+            self._busy = False
+            busy = bytearray(rep)
+            busy[2] = 1
+            return bytes(busy)
+        return rep or b""

@@ -256,7 +256,64 @@ reply wait) → `0x07` run-loader (commit) → `0x08` reboot. No 0x5B, no
   The DFU wire protocol (DFU_READ/DFU_WRITE, PS keys, BCSP/H4) is the standard
   BlueCore DFU protocol from the CSR SDK.
 
-## SC2V2 vendor flow, fully reconstructed (2026-10-19) [derived from threadMethodUpdate: default path for deviceTarget 0x3217; validated live with tools/re/csr_full.py]
+## SC2V2 vendor flow — LIVE VERIFIED 2026-10-19 (device upgraded 2.3.2.1 → 2.4.0.0) [derived from threadMethodUpdate: 0x10004bb7f → 0x10005d2b0..0x10005f222; replayed exactly by schuberth-dfu update]
+
+**SUPERSEDES the 2026-10-19 "fully reconstructed" model** (kept below for
+history): that model wrongly assigned the 0x20/0x22/0x21 "session"
+handshake, the 0x0E last-chunk cmd, and per-image 0x08/0x0A pairs to
+0x3217. Those belong to the **PRISM family only**: the block at
+0x10004bb8c+ is entered ONLY when `deviceTarget ∈ {0x5510, 0x5580,
+0x5570, 0x5576, 0x3060}` — the chain at 0x10004bb02–0x10004bb85 ends in
+`jne 0x10005d2b0`, so every other PID (incl. 0x3217) **skips the whole
+handshake region**. A 0x3217 firmware answering status 2 to
+0x20/0x21/0x22/0x0F/0x12/0x40/0x5A/0x5B simply does not implement those
+commands; it is NOT a power/battery gate (the earlier "dead battery
+blocks updates" conclusion was wrong — the vendor dialog for our device
+says "SC2, SC1M, SC2 Standard: **Leave it powered off**", i.e. the
+normal USB-charge state is the intended update state).
+
+**The real 0x3217 sequence** (0x10005d2b0, loop stride 0x138 over the
+container image table; entry fields: +4 = flag byte = container entry's
+second u32 (parsed as `Image.flag`), +8 = ptr, +0xc = size, +0x24 =
+skip/bookkeeping dword):
+
+1. sleep(5) (0x10005d2b0 `mov edi,5; call sleep`).
+2. For **every** container image, in table order — the submesh included,
+   over transport B (0x3217) only; the 0x3220 A-side is never touched on
+   this path (the rbx==2 submesh skip branches only fire for the PRISM
+   PIDs):
+   - `0x05` start, frame [2] = `Image.flag` (c1b `sub_100108c1b` blocks
+     until a reply echoing the cmd arrives — no timeout, no retry cap);
+   - chunks `[01 06 lenBE16 data(≤0x3FB)]`, length via `rol ax,8;
+     mov word [2..3]` at 0x10005d458, data at [4..]; per-chunk ack =
+     `sub_100108a72`: read 67 B in a **tight loop, no sleep, no bound**,
+     retry while reply[2]==1 (busy), exit on any other status;
+   - `0x07` commit (frame [01 07 ...], residual chunk bytes tolerated).
+3. sleep(5) (0x10005e900), then the PID chains resolve to 0x10005f1e2:
+   `0x08` reboot `[01 08 00]` — gated on the did_any flag (0x10005f1f2,
+   set when image +0x24 bookkeeping dword is 0/2) — then sleep(1).
+4. The device re-enumerates **by itself** (~40 s observed); the vendor
+   reopens handles (0x10005ee5c / final phase 0x100060274) and re-reads
+   versions. No 0x0A gating, no 0x0E, no session.
+
+**Live replay evidence (csr11)**: SC2.img 1,075,012 B in 41.2 s, vp.bin
+5,817,184 B in 155.7 s, Submesh 1,224,847 B in 113.1 s — every chunk ack
+status 0, every commit status 0; 0x08 → device gone → back ~40 s later
+with 0x01 answering `02 01 00 02 04 00 00` = **2.4.0.0**; 0x3220 Airoha
+still 0.4.0.0.4. Timing: full update ≈ 4–6 min, dominated by staging.
+Mid-run notes: after a commit the device can be silent to the next 0x05
+for tens of seconds (it is writing flash) — c1b-style blocking reads wait
+through it; pyusb-style capped retries misread this as failure (csr9
+stalled exactly there).
+
+**Transport timing primitives** (correction): `sub_100108a4f` = single
+1023 B write (0x3ff), returns `not(ret)>>31` as bool; `sub_100108a72` =
+67 B read busy loop (seed reply[2]=0xFF sentinel, retry while [2]==1,
+read error → fail); `sub_100108c1b` = write + blocking echo read;
+0x10013c855 = `sleep(edi)` thunk. The vendor app has **no timeouts
+anywhere** in this loop — all pacing is device-driven.
+
+### History (superseded): the 2026-10-19 "fully reconstructed" model, PRISM branch misread as 0x3217 [derived from threadMethodUpdate: default path for deviceTarget 0x3217; validated live with tools/re/csr_full.py]
 
 **Dispatch**: all SC2-family PIDs 0x3210–0x321C share one entry
 (0x10003e3dc–0x10003e54d → 0x10003e54d "BBBBB"). Inside, chains of

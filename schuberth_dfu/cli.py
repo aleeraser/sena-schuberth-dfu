@@ -149,17 +149,14 @@ def cmd_update(args) -> int:
     if dev.product_id == 0x3217:
         # SC2V2: kernel HID path unusable (malformed descriptors) -> raw
         # USB control/interrupt transfers; needs root (hid-generic detach).
-        from .rawusb import RawHandle, RawUsbError, scan_raw
+        # The whole update runs on the 0x3217 interface (0x3220 is not
+        # touched; see sc2flow module docstring).
+        from .rawusb import RawHandle, RawUsbError
         from .sc2flow import Sc2Error, update_sc2v2
-        pids = {p for p, _, _ in scan_raw()}
-        if 0x3220 not in pids:
-            print("submesh interface 092b:3220 not present; check the cable")
-            return 1
         try:
-            with RawHandle(0x3217) as main_h, RawHandle(0x3220) as mesh_h:
-                update_sc2v2(main_h, mesh_h, container, data, log=log,
-                             force=args.force,
-                             mesh_reopen=lambda: RawHandle(0x3220))
+            update_sc2v2(RawHandle(0x3217), container, data, log=log,
+                         force=args.force,
+                         reopen=lambda: RawHandle(0x3217))
         except (RawUsbError, Sc2Error) as exc:
             print(f"SC2V2 flow failed: {exc}")
             return 1
@@ -225,8 +222,26 @@ def cmd_selftest(args) -> int:
                mesh_opener=lambda: mesh)
     assert mesh.chunks == b"".join(blobs), "sc2 sim data mismatch"
     print("  OK: all bytes transferred, busy-retry handled")
-    print("selftest passed — protocol layers work; hardware validation "
-          "still pending (ticket 06)")
+
+    print("sc2v2 flow (live-verified: every image via transport B, "
+          "0x05/0x06xN/0x07 per image, one final 0x08):")
+    from .sc2flow import update_sc2v2
+    from .sim import FakeSc2V2
+    v2blobs = [os.urandom(4000), os.urandom(700), os.urandom(1300)]
+    v2data = build_container(version=b"v2.4.0.0-build0", device_id=0x3217,
+                             blobs=v2blobs,
+                             names=[b"SC2.img", b"vp.bin",
+                                    b"Submesh_v0.4b4.bin"],
+                             types=[0, 1, 3])
+    v2c = parse_sena_container(v2data)
+    dev2 = FakeSc2V2(version=(2, 3, 2, 1), target=(2, 4, 0, 0))
+    assert update_sc2v2(dev2, v2c, v2data, log=lambda s: None) is True
+    assert dev2.applied == v2blobs, "sc2v2 image data mismatch"
+    assert dev2.version == (2, 4, 0, 0) and dev2.reboots == 1
+    print("  OK: 3 images staged+committed over B, reboot applied "
+          "2.3.2.1 -> 2.4.0.0")
+    print("selftest passed — protocol layers work; SC2V2 flow additionally "
+          "verified end-to-end on real hardware (2.3.2.1 -> 2.4.0.0)")
     return 0
 
 

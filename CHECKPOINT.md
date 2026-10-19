@@ -8,15 +8,16 @@ is the *working* state including dead ends and the live experiment log.
 
 Reverse-engineer the SCHUBERTH Bluetooth Device Manager (Windows NSIS
 setup.exe + macOS .pkg, no Linux version) and build a Linux updater.
-The Python package `schuberth_dfu` is complete and unit-tested (35 tests
-pass offline). **Ticket 06 (end-to-end validation on the real SC2V2) is
-blocked on hardware, not knowledge**: the vendor update flow is fully
-reconstructed (findings.md "SC2V2 vendor flow, fully reconstructed") and
-our package now reproduces it byte-exactly; the live unit refuses the
-update **session handshake (cmd 0x20, status 2)** because its battery is
-dead/removed — the headset does not power on at all, and the vendor app
-enforces the same power/battery precondition. Next hardware step: a
-working battery or a second SC2V2 unit; §7 has the plan.
+The Python package `schuberth_dfu` is complete and unit-tested (36 tests
+pass offline). **Ticket 06 is DONE: the real SC2V2 was updated
+2.3.2.1 → 2.4.0.0 on 2026-10-19 with the vendor-exact flow** (findings.md
+"SC2V2 vendor flow — LIVE VERIFIED"). Note the earlier "power/battery
+gate" and "session handshake" model was a misread — the 0x20/0x21/0x22/
+0x0E commands belong to the PRISM family; 0x3217's real flow is a simple
+per-image `0x05 [2=flag] / 0x06 chunks / 0x07` loop for ALL container
+images over the 0x3217 interface, one `0x08` at the end (details §5/§6).
+Remaining work: other device families (tickets 08/09/10) and the UI
+decision (ticket 03).
 
 ## 2. Quickstart (fresh shell)
 
@@ -48,9 +49,11 @@ commands; the vendor app needs it too.
   device_id 0x3217, 3 images: `SC2.img` (type 0, 1,075,012 B, magic
   "CSR-dfu2"), `vp.bin` (type 1, 5,817,184 B), `Submesh_v0.4b4.bin`
   (type 3, 1,224,847 B). Block idx = container image index (0,1,2).
-- Device state at time of writing: responsive on both sides, version still
-  2.3.2.1; **will not power on (dead/removed battery)** → session cmds
-  (0x20/0x21/0x22/0x0F/0x10/0x12) answer status 2; flash steps refused.
+- Device state at time of writing: **updated to main 2.4.0.0** (submesh
+  0.4.0.0.4) on 2026-10-19 via the vendor-exact flow (csr11); responsive
+  on both interfaces. The "won't power on with USB / status 2 to 0x2x"
+  behaviour is the *normal, intended* update state for this family
+  (vendor dialog: "SC2 ... Leave it powered off") — see correction below.
 
 ## 4. Vendor artifacts (gitignored; on disk under `extract/`)
 
@@ -140,41 +143,55 @@ per chunk round-trip, 50 ms gives ~90 ms).
 | csr4 | + per-chunk ack lockstep (vendor 100108a72) | all 1055 chunks acked st0; **0x0E (writeLAST) → status 2**; commit inert |
 | csr5 | + commit frame `[01 07 00]` | commit ACK; still 2.3.2.1 — because 0x0E finalization was refused (status 2): staging never completed on this unit |
 | handshake probe | `0x0A,0x01,0x20,0x22,0x21` in vendor order | 0x20/0x22/0x21 all **status 2** (also 0x0F/0x10/0x12/0x13/0x21/0x40/0x5A/0x5B); OK: 0x01/0x02/0x03/0x05/0x06/0x07/0x08/0x0A/0x50/0x51/0x60 |
+| csr7 | all-0x06 staging capacity probe | **all 1,075,012 B acked st=0** (no capacity limit); bare `[01 0E 00]` also status 2 |
+| csr8 | all 0x06 (no 0x0E at all) -> 0x07 commit -> 0x0A x8 -> 0x08 | commit ACK st0, 0x0A [3]=2 constant, 0x08 re-enumerates, still 2.3.2.1 |
+| meshfirst/meshcommit | A:0x05 dummy / full submesh stage+A:0x07+0x08 first, THEN B:0x20/0x22/0x21 | mesh phase runs fine (submesh re-staged+committed, same version), B handshake STILL status 2 — mesh-first does not unlock |
+| arm combos | 0x50->0x51->0x60 -> handshake | no change; 0x02 payload `01 95 DC 35 8D` static across samples (device id/counter, not voltage) |
+| **static breakthrough** | PID gate at 0x10004bb7f: `cmp eax,{0x5510,0x5580,0x5570,0x5576,0x3060}; jne 0x10005d2b0` | the whole 0x20/0x22/0x21+0x0E region is PRISM-family only; 0x3217's real path is 0x10005d2b0 (per-image 0x05[2=flag]/0x06/0x07 loop) — everything empirical up to here was chasing a phantom |
+| csr9/csr10 | replay attempts w/ capped retries | stalled at image1 0x05 (device busy writing flash post-commit; capped pyusb retries misread it) — fix: block like vendor c1b |
+| **csr11 — UPDATE SUCCEEDED** | vendor-exact: sleep5, (0x05[b], 0x06xN tight-ack, 0x07)x3, sleep5, 0x08 | staged 1.07/5.82/1.22 MB in 41/156/113 s, all acks+commits status 0; after 0x08 device re-enumerated ~40 s; **version 2.4.0.0**, submesh 0.4.0.0.4. Ticket 06 closed |
 
-### THE GATE (settled 2026-10-19): power/battery precondition
-The vendor's 0x3217 flow requires the session handshake `0x20 → 0x22(x25) →
-0x21` (0x10004bb8c/…bbc5/…bfc0, failure branch logs "UPDATE START MESH
-HANDLE FIND") before any CSR download; the vendor aborts if it fails. Our
-unit refuses (status 2) **because the headset does not power on at all —
-dead/removed battery** (user confirmed: no power-on even unplugged). The
-`0x0E` refusal (status 2) and inert commits are the same power/flash
-precondition. The vendor app would fail identically on this unit. Ticket 06
-is blocked on **hardware (working battery / another SC2V2 unit)**, not on
-protocol knowledge.
+### THE "GATE" WAS A PHANTOM (corrected later on 2026-10-19 — device now updated to 2.4.0.0)
+The earlier conclusion ("session handshake 0x20→0x22→0x21 required; our
+unit refuses due to dead battery") was a **dispatch misread**: that whole
+handshake block (0x10004bb8c+) is gated at 0x10004bb02–0x10004bb85 to the
+PRISM-family PIDs {0x5510,0x5580,0x5570,0x5576,0x3060}; every other PID —
+0x3217 included — takes `jne 0x10005d2b0` and never sends 0x2x/0x0E.
+Status 2 to those commands is "not implemented on this product", not a
+power gate. The real 0x3217 flow (0x10005d2b0) worked on the first
+vendor-exact replay with the headset in its normal USB/powered-off state:
+sleep(5) → per image (ALL three, incl. submesh, over 0x3217 only):
+0x05 [2=Image.flag] → 0x06 chunks (tight busy-ack, no sleeps) → 0x07 →
+sleep(5) → 0x08 [01 08 00] → device self-reboots (~40 s) → 2.4.0.0.
+The dead-battery story started from the user's unit powering off when
+USB is plugged — that is simply how this family enters update mode.
 
 ### Corrected protocol facts (supersede older claims in §5 where they conflict)
 - `sub_100108c1b` (c1b) puts the FF sentinel in the **reply buffer**, not the
   frame. All vendor frames are `[01 cmd 00 00 ...]` zero-padded 1023 B.
   (Our `[01 cmd FF]` probes worked for queries; commit needs `[01 07 00]`.)
-- CSR download: `0x05` start `[01 05 00]`; chunks `[01 06 lenBE16 data≤1019]`
-  (length at [2..3], data at [4]); last chunk cmd `0x0E`; per-chunk ack read
-  (busy `[2]==1` → retry; non-busy reply ends the wait — status 2 does NOT
-  stop the vendor loop, it exits the ack wait and continues).
-- `0x20/0x22/0x21` are part of OUR deviceTarget's phase (0x10004b900+) —
-  earlier note "0x20/0x22 only for deviceTarget 0x3240" was wrong.
+- CSR download on 0x3217: `0x05` start **[2=Image.flag]**; chunks
+  `[01 06 lenBE16 data≤1019]` (length at [2..3], data at [4]); NO 0x0E
+  last-chunk on this PID — 0x0E/0x20/0x21/0x22 are PRISM-family commands.
+  Per-chunk ack read (sub_100108a72: tight loop, retry while `[2]==1`,
+  no sleep, no timeout).
+- Live EP1 pushes lag one write behind: always echo-match `reply[1]==cmd`
+  when reading acks (bulk(echo=True) in sc2flow).
 - 0x3220 report sizes are 61 B OUT/IN; 1023 B SET_REPORT to it times out.
-  The whole CSR download for SC2V2 runs on **0x3217** (slot 0 = 1086ec
-  handle) — 0x3220 only carries the transport-A submesh block loop.
+  For SC2V2 the 0x3220 interface carries **no vendor update traffic at
+  all** — even the submesh image stages via 0x3217.
 - Shim: `sub_10012e44c` write = HID output report id1 len 1023;
   `sub_10012e68e` read = 67 B input report. Handle obj: {+0x00 IOHIDDevice,
-  +0x10 error, +0x40 buffered file, +0x90 timeout}.
+  +0x10 error, +0x40 buffered file, +0x90 timeout}. `0x10013c855` =
+  sleep(edi seconds).
 
-### Phase map for deviceTarget 0x3217 (verified by chain trace)
-`0x10003e3dc` PID chain (0x3210–0x321C all → 0x10003e54d "BBBBB") → chains
-at 0x10003f691/0x100040b57 exclude 0x3217 → **default fallthrough** → QCC-BT
-phase 0x10004b900–0x10004d600 (0x0A/0x01 → 0x20/0x22/0x21 → 0x21/0x20 →
-0x05/chunks/0x0E → 0x07/0x08 → reopen → 0x0A "VP GOGO") → mesh/submesh block
-loop (0x100045728) separately.
+### Phase map for deviceTarget 0x3217 (verified 2026-10-19, live-verified)
+`0x10003e3dc` PID chain (0x3210–0x321C all → 0x10003e54d "BBBBB") →
+fallthrough chains → PID gate at 0x10004bb02 (PRISM handshake region
+skipped: `jne 0x10005d2b0`) → **image loop 0x10005d2b0–0x10005d4cf**
+(sleep 5; per image 0x05[2=flag]/0x06xN/0x07) → 0x10005e900 (sleep 5) →
+PID chains → 0x10005f1e2 (0x08 [01 08 00] if did_any; sleep 1) →
+0x100060274 final (reopen handles, re-read versions).
 
 ## 7. Working-tree state at checkpoint time
 
@@ -191,14 +208,16 @@ Live CLI on our unit now prints exactly:
 headset's main system must be powered on with a working battery…`
 
 ### Next steps (in order)
-1. **Get a working battery / second SC2V2** → rerun
-   `pkexec …/schuberth-dfu update --image …/firmware/sc2v2-2.4.0.0.img --yes`
-   (csr_full.py is the raw driver if needed). Watch: 0x0E ack should be
-   status 0 on a healthy unit; then version → 2.4.0.0 closes ticket 06.
-2. If a healthy unit shows 0x0E→0 but commit inert: try `0x05` with [2]=1
-   (second-chain flag byte variant) and check 0x0A payload semantics.
-3. Offline (unblocked): ticket 09 PARTDATA grammar, 08 SC1 flow, 10 PRISM;
-   then UI decision (ticket 03).
+1. Optional regression: re-run `pkexec …/schuberth-dfu update --image
+   …/firmware/sc2v2-2.4.0.0.img --yes` on the now-2.4.0.0 unit (same
+   version → should print SKIP; with --force it should re-flash cleanly).
+   Nothing else stands between us and "SC2V2 supported" — the CLI flow
+   code is what csr11 proved on hardware.
+2. Offline (unblocked): ticket 09 PARTDATA grammar, 08 SC1 flow,
+   10 PRISM (the 0x55xx handshake region 0x10004bb8c–0x10005f1e2 is now
+   mapped for that ticket), then UI decision (ticket 03).
+3. If a future unit shows chunk-ack status 2 mid-staging: sc2flow aborts
+   before any commit (safe); investigate that unit's flash state.
 
 ## 8. Code map (`schuberth_dfu/`)
 

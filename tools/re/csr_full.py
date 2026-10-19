@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Vendor-exact SC2V2 main update on transport B (0x3217), reconstructed
+"""SUPERSEDED (2026-10-19): the 0x20/0x22/0x21 handshake + 0x0E sequence
+below is the PRISM-family branch (PID gate 0x10004bb02–0x10004bb85);
+0x3217 never sends those commands. The verified 0x3217 flow lives in
+tools/re/sc2v2_live_update.py and schuberth_dfu/sc2flow.py::update_sc2v2.
+Kept for reference (it maps the 0x55xx/0x3060 branch for ticket 10).
+
+Vendor-exact SC2V2 main update on transport B (0x3217), reconstructed
 from -[UpdateViewController threadMethodUpdate:] default path for 0x3217
 (QCC-BT phase 0x10004b900-0x10004d600):
 

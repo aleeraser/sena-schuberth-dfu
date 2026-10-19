@@ -1,6 +1,6 @@
 # 06 — End-to-end update CLI
 
-Status: in-progress
+Status: done
 Blocked by: 01, 02, 03, 04, 05
 
 Wire everything into `schuberth-dfu update`:
@@ -17,6 +17,15 @@ Wire everything into `schuberth-dfu update`:
   confirmation. All paths exercised offline via fake devices; the live
   hardware leg (report ids, busy timing, Find Mesh re-enumeration) is the
   remaining work.
+- 2026-10-19 (DONE): live SC2V2 (0x3217) updated **2.3.2.1 → 2.4.0.0**
+  with the vendor-exact flow, then via the package after rewriting
+  `update_sc2v2` to the verified model: sleep(5); per container image
+  (ALL three incl. submesh, over 0x3217 only — 0x3220 untouched):
+  `0x05 [2=Image.flag]` → `0x06` chunks `[lenBE16 data≤1019]` tight
+  busy-ack → `0x07`; sleep(5); `0x08`; device self-reboots (~40 s),
+  version re-read confirms. The earlier "session handshake / power gate"
+  model was a PRISM-family misread (PID gate 0x10004bb7f, see
+  findings.md). 36 tests + selftest green.
 
 ## Hardware validation checklist (first run, SC2)
 
