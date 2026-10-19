@@ -8,21 +8,19 @@ is the *working* state including dead ends and the live experiment log.
 
 Reverse-engineer the SCHUBERTH Bluetooth Device Manager (Windows NSIS
 setup.exe + macOS .pkg, no Linux version) and build a Linux updater.
-The Python package `schuberth_dfu` is complete and unit-tested (36 tests
-pass offline). **Ticket 06 is DONE: the real SC2V2 was updated
+The Python package `schuberth_dfu` is complete and unit-tested (52 tests
+pass offline) and ships a **local web UI** (`schuberth-dfu ui`) mirroring
+the vendor app's flow (recognition -> firmware-check -> precaution ->
+update with live log; verified end-to-end against the real device). **Ticket 06 is DONE: the real SC2V2 was updated
 2.3.2.1 → 2.4.0.0 on 2026-10-19 with the vendor-exact flow** (findings.md
 "SC2V2 vendor flow — LIVE VERIFIED"). Note the earlier "power/battery
 gate" and "session handshake" model was a misread — the 0x20/0x21/0x22/
 0x0E commands belong to the PRISM family; 0x3217's real flow is a simple
 per-image `0x05 [2=flag] / 0x06 chunks / 0x07` loop for ALL container
 images over the 0x3217 interface, one `0x08` at the end (details §5/§6).
-Remaining work: other device families — ticket 08
-(SC1A/SC10U/SC1S/SC1M) and ticket 09 (QCC UCOM3/6R/7R + APPUHDRV5
-grammar) are RE-searched and implemented (`update_sc1`, `update_qcc`;
-sim-tested, **live hw validation pending**); ticket 10 (PRISM) is
-answered — updates are drop-file copies to a USB MSC volume, wrapper
-decoded, the final transform needs real hardware so flashing stays
-unwired; 07 (Airoha block table) is offline research.
+Remaining work is hardware-gated: live validation of the SC1 (08) and
+QCC (09) models on real units, and the PRISM drop-file capture (10) on
+a PRISM; 07 (Airoha block table) is answered.
 
 ## 2. Quickstart (fresh shell)
 
@@ -257,9 +255,15 @@ headset's main system must be powered on with a working battery…`
   log, force, reopen)`** = the LIVE-VERIFIED SC2V2 flow;
   **`update_sc1(...)`** same signature = ticket-08 SC1-family model
   (session preamble 0x01/0x21/0x50 best-effort → hard 0x21 → 0x20;
-  first-2-images cap; live hw test pending). `update_sc2` = old
-  unverified 0x3170 model, kept for history; `airo_ready`/
-  `find_mesh_handle` serve it.
+  first-2-images cap; live hw test pending).
+  **`update_qcc(...)`** = ticket-09 QCC model (ENTER_DNLD 0x03[2=5],
+  final-chunk 0x0E; hw pending). `update_sc2` = old unverified 0x3170
+  model, kept for history; `airo_ready`/`find_mesh_handle` serve it.
+- `ui.py` + `web/index.html`: stdlib local web UI (`schuberth-dfu ui`);
+  injectable `UIState` (devices/versions/updater/checker/preparer) so the
+  JSON API is fully tested against fakes; routes: GET `/`,
+  `/api/state`, `/api/check?product=`; POST `/api/prepare` (manifest
+  download), `/api/update` (single job slot, live log tail).
 - `sim.py`: FakeSc2V2 / FakeSc1 (`accept_session=False` = refuses the
   session cmds) / FakeAiroha (sets reply length byte; handles
   0x01/0x05/0x06/0x07/0x08/0x0A/0x5B) / FakeSc2 / build_container.

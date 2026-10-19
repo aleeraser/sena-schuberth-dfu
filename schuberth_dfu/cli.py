@@ -255,6 +255,12 @@ def cmd_selftest(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    from .ui import serve
+    serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="schuberth-dfu",
                                  description=__doc__)
@@ -283,9 +289,15 @@ def main(argv=None) -> int:
     sub.add_parser("selftest",
                    help="run the update flows against simulated devices")
 
+    p = sub.add_parser("ui",
+                       help="serve the local web UI (device list + update)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8737)
+    p.add_argument("--no-browser", action="store_true")
+
     handlers = {"detect": cmd_detect, "check": cmd_check, "version": cmd_version,
                 "download": cmd_download, "update": cmd_update,
-                "selftest": cmd_selftest}
+                "selftest": cmd_selftest, "ui": cmd_ui}
     args = ap.parse_args(argv)
     return handlers[args.cmd](args)
 

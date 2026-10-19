@@ -46,8 +46,20 @@ schuberth-dfu check SC2 --all-revisions
 schuberth-dfu download SC2 -o sc2.img  # download + verify all MD5s
 schuberth-dfu version                # live versions (SC2V2, read-only)
 schuberth-dfu update --image sc2.img --yes   # flash connected device
+schuberth-dfu ui                    # local web UI (device list + update)
 schuberth-dfu selftest       # run both update flows against simulated devices
 ```
+
+## Graphical interface
+
+`schuberth-dfu ui` serves a local web app (default
+`http://127.0.0.1:8737/`, opens your browser) mirroring the vendor app's
+flow for consistency: **Device recognition** (live USB scan) →
+**Firmware-Check** (server manifest vs device version) → **precaution
+steps** → **update with live progress log**. The UI reuses the same
+package flows and refuses concurrent flashes; the final confirm dialog
+is the `--yes` equivalent. Its look is rebuilt with neutral inline
+assets — the vendor's proprietary icons are deliberately not shipped.
 
 Product names are the internal catalog keys (see
 `docs/analysis/pid-catalog.csv`), e.g. `SC2`, `SC2V2`, `ST1`, `PRISM`.

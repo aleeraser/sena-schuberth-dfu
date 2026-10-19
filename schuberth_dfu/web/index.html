@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCHUBERTH Bluetooth Device Manager — Linux</title>
+<style>
+  :root{
+    --bg:#eef0f3; --card:#ffffff; --ink:#26292e; --muted:#777d86;
+    --accent:#1a66c4; --ok:#1e8e3e; --warn:#b06000; --err:#c5221f;
+    --line:#e3e6ea;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 "Helvetica Neue",Helvetica,Arial,sans-serif}
+  header{background:#26292e;color:#fff;padding:14px 24px;display:flex;
+         align-items:baseline;gap:12px}
+  header .brand{font-size:17px;font-weight:700;letter-spacing:.12em}
+  header .sub{color:#9aa2ad;font-size:12px}
+  main{display:grid;grid-template-columns:320px 1fr;gap:18px;
+       max-width:1080px;margin:22px auto;padding:0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;box-shadow:0 1px 3px rgba(20,30,40,.06)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;
+     color:var(--muted);margin:0 0 12px}
+  .dev{border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+       margin-bottom:8px;cursor:pointer;display:flex;gap:10px;align-items:center}
+  .dev:hover{border-color:var(--accent)}
+  .dev.sel{border-color:var(--accent);background:#f3f8ff}
+  .dev .nm{font-weight:600}
+  .dev .pid{color:var(--muted);font-size:12px}
+  .badge{font-size:11px;border-radius:10px;padding:1px 8px;margin-left:auto}
+  .badge.ok{background:#e6f4ea;color:var(--ok)}
+  .badge.no{background:#fce8e6;color:var(--err)}
+  .status{margin-top:10px;font-size:13px;color:var(--muted)}
+  .status.err{color:var(--err)}
+  .status.ok{color:var(--ok)}
+  .device-head{display:flex;gap:18px;align-items:center;margin-bottom:14px}
+  .device-head svg{flex:0 0 84px}
+  .kv{font-size:13px;color:var(--muted)} .kv b{color:var(--ink)}
+  table.fw{width:100%;border-collapse:collapse;margin:8px 0 14px}
+  table.fw td{padding:6px 4px;border-bottom:1px solid var(--line);font-size:13px}
+  table.fw td:last-child{text-align:right}
+  .chip{font-size:12px;border-radius:10px;padding:2px 10px}
+  .chip.same{background:#e6f4ea;color:var(--ok)}
+  .chip.new{background:#fef7e0;color:var(--warn)}
+  button{font:inherit;border:0;border-radius:7px;padding:9px 18px;cursor:pointer}
+  button.primary{background:var(--accent);color:#fff}
+  button.primary:disabled{background:#b7c4d3;cursor:not-allowed}
+  button.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .precaution{background:#f8f9fb;border:1px solid var(--line);border-radius:8px;
+              padding:12px 16px;font-size:13px;margin:12px 0}
+  .precaution ol{margin:6px 0 0;padding-left:20px}
+  input[type=text]{font:inherit;padding:8px 10px;border:1px solid var(--line);
+                   border-radius:7px;flex:1;min-width:220px}
+  .console{background:#14161a;color:#c9d3de;border-radius:8px;padding:12px;
+           font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+           height:240px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
+  .banner{border-radius:8px;padding:10px 14px;margin-top:12px;font-weight:600}
+  .banner.done{background:#e6f4ea;color:var(--ok)}
+  .banner.failed{background:#fce8e6;color:var(--err)}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #fff;
+           border-right-color:transparent;border-radius:50%;
+           animation:sp 0.8s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin:26px 0}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">SCHUBERTH</span>
+  <span class="sub">Bluetooth Device Manager · Linux reconstruction</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Device recognition</h2>
+    <div id="devlist"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" onclick="refresh()">Rescan devices</button>
+    </div>
+    <div id="recog" class="status">Searching…</div>
+  </section>
+
+  <section class="card" id="detail" hidden>
+    <div class="device-head">
+      <svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
+        <path d="M14 52a28 28 0 0 1 56 0" fill="none" stroke="#26292e"
+              stroke-width="7" stroke-linecap="round"/>
+        <rect x="8" y="48" width="14" height="24" rx="6" fill="#26292e"/>
+        <rect x="62" y="48" width="14" height="24" rx="6" fill="#26292e"/>
+      </svg>
+      <div>
+        <div style="font-size:19px;font-weight:700" id="d-name">—</div>
+        <div class="kv" id="d-info">—</div>
+      </div>
+    </div>
+
+    <h2>Firmware-Check</h2>
+    <table class="fw">
+      <tr><td>Device version</td><td><b id="f-cur">—</b></td></tr>
+      <tr><td>Latest firmware</td><td id="f-lat">—</td></tr>
+    </table>
+
+    <div class="precaution">
+      <b>Before updating</b>
+      <ol>
+        <li>Keep the USB cable connected throughout the update.</li>
+        <li>Leave the headset powered off (charge mode) unless the
+            device family requires otherwise.</li>
+        <li>Do not remove power or unplug while the progress log runs.</li>
+      </ol>
+    </div>
+
+    <div class="row">
+      <button class="ghost" id="btn-prepare" onclick="prepare()">Download latest firmware</button>
+      <input type="text" id="f-path" placeholder="…or enter a local .img path">
+      <label style="font-size:13px;color:var(--muted)">
+        <input type="checkbox" id="f-force"> force re-flash
+      </label>
+      <button class="primary" id="btn-update" onclick="startUpdate()" disabled>
+        Update firmware
+      </button>
+    </div>
+    <div id="prep" class="status"></div>
+
+    <div class="console" id="log" hidden></div>
+    <div id="banner" hidden class="banner"></div>
+  </section>
+
+  <section class="card" id="empty" style="grid-column:2">
+    <h2>Firmware management mode</h2>
+    <p style="color:var(--muted)">Device is not found. Connect your
+      SCHUBERTH headset via USB and press <b>Rescan devices</b>.</p>
+  </section>
+</main>
+<footer>Unofficial Linux tool · protocol reconstructed from the vendor
+  app · flashing is at your own risk</footer>
+
+<script>
+let state=null, selected=null, poll=null, logAnchor=0;
+
+async function api(path, body){
+  const opt = body ? {method:"POST",headers:{"Content-Type":"application/json"},
+                      body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  return r.json();
+}
+async function refresh(){
+  state = await api("/api/state");
+  render();
+}
+function render(){
+  const list = document.getElementById("devlist");
+  list.innerHTML = "";
+  const rec = document.getElementById("recog");
+  const devs = state.devices || [];
+  if(!devs.length){
+    rec.textContent = "Device is not found. Try again.";
+    rec.className = "status err";
+    document.getElementById("empty").hidden = false;
+    document.getElementById("detail").hidden = true;
+    return;
+  }
+  rec.textContent = "Device recognized successfully";
+  rec.className = "status ok";
+  devs.forEach(d=>{
+    const el = document.createElement("div");
+    el.className = "dev"+(selected===d.pid?" sel":"");
+    el.innerHTML = `<div><div class="nm">${d.name}</div>
+        <div class="pid">${d.pid}${d.serial?" · "+d.serial:""}</div></div>
+      <span class="badge ${d.supported?"ok":"no"}">${
+        d.supported ? (d.family||"supported") : "unsupported"}</span>`;
+    el.onclick = ()=>{ if(d.supported){ selected=d.pid; render(); detail(); } };
+    list.appendChild(el);
+  });
+  if(!selected || !devs.some(d=>d.pid===selected)) selected = devs.find(d=>d.supported)?.pid||null;
+  const show = !!selected;
+  document.getElementById("empty").hidden = show;
+  document.getElementById("detail").hidden = !show;
+  if(show) detail();
+  job();
+}
+function curDevice(){ return (state.devices||[]).find(d=>d.pid===selected); }
+function detail(){
+  const d = curDevice(); if(!d) return;
+  document.getElementById("d-name").textContent = d.name;
+  document.getElementById("d-info").innerHTML =
+    `USB PID <b>${d.pid}</b> · family <b>${d.family}</b>`;
+  const v = d.versions||{};
+  document.getElementById("f-cur").textContent =
+    v.main ? v.main + (v.submesh ? ` (submesh ${v.submesh})` : "") : (d.versions_error||"—");
+  const lat = document.getElementById("f-lat");
+  if(!lat.dataset.for || lat.dataset.for!==d.name){
+    lat.textContent="checking…"; lat.dataset.for=d.name; lat.innerHTML="checking…";
+    api("/api/check?product="+encodeURIComponent(d.name)).then(r=>{
+      if(r.error){ lat.textContent = "— ("+r.error+")"; return; }
+      const same = v.main && r.version && norm(r.version)===norm(v.main);
+      lat.innerHTML = `${r.version} <span class="chip ${same?"same":"new"}">${
+        same?"up to date":"update available"}</span>`;
+      lat.dataset.file = r.filename;
+      maybeEnable();
+    });
+  }
+  maybeEnable();
+}
+function norm(v){ return String(v).replace(/^v/,"").split("-")[0]; }
+function maybeEnable(){
+  const p = document.getElementById("f-path").value.trim();
+  document.getElementById("btn-update").disabled =
+    !p || !selected || (state.job && ["queued","running"].includes(state.job.status));
+}
+async function prepare(){
+  const d = curDevice(); if(!d) return;
+  const s = document.getElementById("prep");
+  s.className="status"; s.textContent="Downloading "+d.name+" firmware…";
+  const r = await api("/api/prepare", {product:d.name});
+  if(r.error){ s.className="status err"; s.textContent=r.error; return; }
+  document.getElementById("f-path").value = r.path;
+  s.className="status ok"; s.textContent="Firmware ready: "+r.filename+" ("+r.version+")";
+  maybeEnable();
+}
+document.getElementById("f-path").addEventListener("input", maybeEnable);
+async function startUpdate(){
+  const image = document.getElementById("f-path").value.trim();
+  const force = document.getElementById("f-force").checked;
+  if(!image || !selected) return;
+  if(!confirm("Flash "+image+" to "+selected+"?\nFlashing can brick the device; keep it plugged in.")) return;
+  const r = await api("/api/update", {pid:selected, image, force});
+  if(r.error){ const s=document.getElementById("prep"); s.className="status err"; s.textContent=r.error; return; }
+  logAnchor=0; startPolling();
+}
+function startPolling(){ if(!poll) poll=setInterval(tick,1000); tick(); }
+function stopPolling(){ clearInterval(poll); poll=null; }
+async function tick(){ state = await api("/api/state"); render(); }
+function job(){
+  const j = state.job; if(!j) return;
+  const log = document.getElementById("log");
+  const banner = document.getElementById("banner");
+  log.hidden=false;
+  const lines=(j.log||[]).slice(logAnchor).join("\n");
+  if(lines){ log.textContent += (logAnchor?"\n":"")+lines; logAnchor=(j.log||[]).length;
+             log.scrollTop=log.scrollHeight; }
+  if(["queued","running"].includes(j.status)){
+    banner.hidden=false; banner.className="banner";
+    banner.innerHTML='<span class="spinner"></span>Update '+j.status+' — do not unplug the device.';
+  } else if(j.status==="done"){
+    stopPolling(); banner.hidden=false; banner.className="banner done";
+    banner.textContent="Firmware updated successfully.";
+    setTimeout(()=>{logAnchor=0; log.textContent=""; banner.hidden=true; refresh();},4000);
+  } else {
+    stopPolling(); banner.hidden=false; banner.className="banner failed";
+    banner.textContent="Update failed: "+((j.result&&j.result.error)||"see log");
+  }
+  maybeEnable();
+}
+refresh().then(()=>{ if(state.job && ["queued","running"].includes(state.job.status)) startPolling(); });
+</script>
+</body>
+</html>

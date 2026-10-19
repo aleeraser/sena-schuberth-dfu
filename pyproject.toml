@@ -23,4 +23,4 @@ schuberth-dfu = "schuberth_dfu.cli:main"
 packages = ["schuberth_dfu"]
 
 [tool.setuptools.package-data]
-schuberth_dfu = ["data/*.csv"]
+schuberth_dfu = ["data/*.csv", "web/*"]
