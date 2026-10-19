@@ -9,3 +9,6 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+
+# vendor firmware containers (downloaded; SHA-256s recorded in findings.md)
+firmware/

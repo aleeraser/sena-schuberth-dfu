@@ -1,18 +1,20 @@
-"""SC2/SC2V2 "Qcc Mesh" update flow (ticket 11) — EXPERIMENTAL.
+"""SC2/SC2V2 update flows (tickets 06/11) — reconstructed from the macOS
+app's -[UpdateViewController threadMethodUpdate:] (findings.md).
 
-Decoded offline from the macOS app (findings.md "SC2 update flow,
-decoded"). The wire framing and commands are evidence-backed, but the
-phase->image ordering is not fully resolved and nothing here has run
-against hardware. Treat as best-effort; keep a downgrade image handy.
-
-Sequence (macOS 0x10003f824 preamble + 0x10004139c block loop):
-  1. normal-mode handle (PID 0x3170/0x3217), transport B (1023/67):
-     cmd 0x01 version -> skip if same; cmd 0x0F start
-  2. "Find Mesh": device re-enumerates a DFU interface,
-     PID in {0x3160, 0x3220, 0x6501, 0x6511}; poll up to 20x
-  3. transport B: cmd 0x12 (rV), cmd 0x0F (VP phase)
-  4. transport C (65/65): cmd 0x00 NOP, cmd 0x05, then per image
-     cmd 0x06 chunks (<=61 B), then cmd 0x07 runloader, cmd 0x08 reboot
+SC2V2 (0x3217) flow, static model confirmed against live probing 2026-10-19:
+  1. B handle (0x3217): cmd 0x01 version -> skip if same.
+  2. QCC update session (vendor 0x10004bb8c..0x10004bfc0): cmd 0x20 start,
+     cmd 0x22 poll x25, cmd 0x21 confirm. Requires the headset's main
+     system to be powered on; a USB-charge-mode device answers status 2
+     and the vendor app aborts too.
+  3. Per main image (type 0 BT, type 1 VP; vendor 0x10004b168/0x10004cb34):
+     cmd 0x05 start, cmd 0x06 chunks [01 06 lenBE16 data(<=1019)] with
+     per-chunk ack (busy-retry), cmd 0x0E last chunk, cmd 0x07 commit,
+     cmd 0x08 reboot, cmd 0x0A result. Frames are [01 cmd 00 ...] —
+     sub_100108c1b never writes FF into the frame (the FF sentinel is in
+     the reply buffer).
+  4. Submesh image (type 3) via the Airoha mesh interface (0x3220),
+     transport A block loop (0x100045728), confirmed live (staging OK).
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from typing import Callable, List, Optional
 from .container import SENAContainer
 from .transport import Device, Handle, scan
 
-DFU_MESH_PIDS = frozenset({0x3160, 0x3220, 0x6501, 0x6511})
+DFU_MESH_PIDS = frozenset({0x3160, 0x3220, 0x6500, 0x6501, 0x6511})
 
 CMD_NOP = 0x00
 CMD_VERSION = 0x01
@@ -30,9 +32,16 @@ CMD_MESH_VERSION = 0x05
 CMD_WRITE = 0x06
 CMD_RUNLOADER = 0x07
 CMD_REBOOT = 0x08
+CMD_RESULT = 0x0A
+CMD_DFU_START = 0x05
+CMD_WRITE_LAST = 0x0E
 CMD_START = 0x0F
 CMD_RV = 0x12
+CMD_SESSION_START = 0x20
+CMD_SESSION_CONFIRM = 0x21
+CMD_SESSION_WAIT = 0x22
 
+CSR_CHUNK_LEN = 0x3FB         # 1019 B payload (vendor 0x100045964: mov eax,0x3fb)
 MESH_CHUNK_LEN = 0x3D         # 61 bytes (0x100041452)
 BULK_CHUNK_LEN = 0x3A         # 58 bytes (bulk mesh loop variant)
 
@@ -164,24 +173,73 @@ def _reopen_mesh(mesh_handle, mesh_reopen, log):
     raise Sc2Error("mesh interface never came back")
 
 
+def qcc_session(link: MeshLink, log: Callable[[str], None],
+                *, wait_retries: int = 25, go_retries: int = 13) -> None:
+    """Vendor update-session handshake (0x10004bb8c/0x10004bbc5/0x10004bfc0):
+    0x20 start, 0x22 poll (x25, usleep(1 ms)), 0x21 confirm. A charge-mode
+    or dead-battery device answers status 2; the vendor app also fails
+    there (retry loop logs 'UPDATE START MESH HANDLE FIND')."""
+    try:
+        link.bulk(CMD_SESSION_START)
+    except Sc2Error as exc:
+        raise Sc2Error(
+            "device refused the update session (cmd 0x20). The headset's "
+            "main system must be powered on with a working battery; a "
+            "USB-charge-mode device answers status 2. Original error: "
+            f"{exc}") from exc
+    for _ in range(wait_retries):       # vendor loop: 0x19 tries, 1 ms sleep
+        try:
+            link.bulk(CMD_SESSION_WAIT)
+            break
+        except Sc2Error:
+            time.sleep(0.001)
+    else:
+        raise Sc2Error("session wait (cmd 0x22) never succeeded")
+    for i in range(go_retries):
+        try:
+            link.bulk(CMD_SESSION_CONFIRM)
+            return
+        except Sc2Error as exc:
+            log(f"session confirm retry {i + 1}/{go_retries}: {exc}")
+            time.sleep(0.001)
+    raise Sc2Error("session confirm (cmd 0x21) never succeeded")
+
+
+def csr_download(link: MeshLink, blob: bytes, *,
+                 progress: Optional[Callable[[int, int], None]] = None,
+                 busy_retries: int = 1000) -> None:
+    """Vendor CSR download loop (0x10004b168): 0x05 start, then per chunk
+    [01 06 lenBE16 data] (last chunk uses cmd 0x0E), then a per-chunk ack
+    read (sub_100108a72 semantics: retry while device says busy [2]==1;
+    a missing reply does not stop the vendor loop either)."""
+    link.bulk(CMD_DFU_START)
+    off = 0
+    while off < len(blob):
+        chunk = blob[off:off + CSR_CHUNK_LEN]
+        cmd = CMD_WRITE_LAST if off + CSR_CHUNK_LEN >= len(blob) else CMD_WRITE
+        link.h.write_bulk(cmd, len(chunk).to_bytes(2, "big") + chunk)
+        for _ in range(busy_retries):
+            rep = link.h.read_bulk()
+            if not rep or all(b == 0 for b in rep):
+                continue
+            if len(rep) > 2 and rep[1] == cmd and rep[2] == 1:
+                time.sleep(link.busy_delay)
+                continue
+            break
+        off += len(chunk)
+        if progress:
+            progress(off, len(blob))
+
+
 def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
                  *, log: Optional[Callable[[str], None]] = None,
                  force: bool = False,
                  mesh_reopen: Optional[Callable[[], object]] = None) -> bool:
-    """SC2V2 flow — confirmed live 2026-10-18/19 (findings.md):
-
-    - 0x3217 (transport B) answers version queries; 0x0F/0x12 return
-      status 2 and 0x06/0x07 are ACKed but inert (no re-enumeration,
-      flash unchanged after a B-only attempt — verified the hard way);
-    - the vendor's SC2V2 branch ("Qcc Mesh Update start VP",
-      0x1000408ed) opens the Airoha mesh (sub_100108544) and streams
-      the container images through transport A on 0x3220; the Airoha
-      side is the master MCU (blocks 0..2 answer cmd 0x05, slowly).
-
-    So: version check on B, all writes through airodfu on 0x3220
-    (block idx = container image index), reboot via B cmd 0x08.
-    Returns True if anything was written.
-    """
+    """SC2V2 flow, vendor-exact (see module docstring; tools/re/csr_full.py
+    is the standalone driver of the same sequence). Main images (types 0/1)
+    stream over B (0x3217) with the session handshake; only the submesh
+    image (type 3) goes through the Airoha mesh loop. Returns True if
+    anything was written. Raises Sc2Error on device refusal."""
     log = log or (lambda s: None)
     link = MeshLink(main_handle)
     wrote = False
@@ -189,97 +247,112 @@ def update_sc2v2(main_handle, mesh_handle, container, data: bytes,
     target = parse_container_version(container.version)
     log(f"main version: {'.'.join(map(str, ver))} -> target "
         f"{'.'.join(map(str, target))}")
-    if ver == target and not force:
-        log("VERSION IS SAME, UPDATE SKIP")
-        return False
 
-    log("Qcc Mesh Update start VP")
-    try:
-        link.bulk(CMD_START)
-    except Sc2Error as exc:
-        log(f"start cmd: {exc} (live devices answer status 2; continuing)")
+    main_images = [(i, im) for i, im in enumerate(container.images)
+                   if im.type in (0, 1)]
+    mesh_images = [(i, im) for i, im in enumerate(container.images)
+                   if im.type == 3]
 
-    from .airodfu import (AirohaError, AirohaResetError,
-                          Link as AiroLink, update_image)
-    alink = AiroLink(mesh_handle, timeout=20.0)
-    sm_ver = airo_ready(alink, log=log)
-    log(f"airoha version: {'.'.join(map(str, sm_ver))}")
-    for idx, image in enumerate(container.images):
-        if image.type == 3:
+    if main_images and (ver != target or force):
+        log("QCC update session (0x20/0x22/0x21)")
+        qcc_session(link, log)
+        for n, (idx, image) in enumerate(main_images):
+            if n:  # vendor's second pair (0x10004c5b7/0x10004c5e3)
+                link.bulk(CMD_SESSION_CONFIRM)
+                link.bulk(CMD_SESSION_START)
+            log(f"CSR download image {image.name or idx} "
+                f"type={image.type} size={image.size:#x}")
+            csr_download(link, image.blob(data),
+                         progress=lambda d, t: log(f"  {d * 100 // t}%")
+                         if d == t else None)
+            link.bulk(CMD_RUNLOADER)         # commit ("QCC BT Runloader Start")
+            time.sleep(2.0)
+            try:
+                link.bulk(CMD_REBOOT)
+            except Sc2Error as exc:
+                log(f"reboot reply: {exc} (device may just restart)")
+            time.sleep(3.0)
+            while True:                      # drain boot-time pushes
+                rep = main_handle.read_bulk(timeout_ms=300)
+                if not rep:
+                    break
+            try:
+                rep = link.bulk(CMD_RESULT)
+                log(f"DFU result: {rep[3] if len(rep) > 3 else '?'}")
+            except Sc2Error as exc:
+                log(f"result query: {exc}")
+            wrote = True
+        new = read_version(link)
+        log(f"main version now: {'.'.join(map(str, new))}")
+    elif main_images:
+        log("main: VERSION IS SAME, UPDATE SKIP")
+
+    mesh_wrote = False
+    if mesh_images:
+        from .airodfu import (AirohaError, AirohaResetError,
+                              Link as AiroLink, update_image)
+        alink = AiroLink(mesh_handle, timeout=20.0)
+        sm_ver = airo_ready(alink, log=log)
+        log(f"airoha version: {'.'.join(map(str, sm_ver))}")
+        for idx, image in mesh_images:
             sm_target = parse_submesh_image_version(image.name)
             if sm_ver == sm_target and not force:
                 log(f"block {idx} ({image.name}): VERSION IS SAME, SKIP")
                 continue
-        log(f"writing block {idx} type={image.type} size={image.size:#x} "
-            f"name={image.name or '-'}")
-        from .rawusb import RawUsbError
-        for attempt in (1, 2):
-            try:
+            log(f"writing block {idx} type={image.type} size={image.size:#x} "
+                f"name={image.name or '-'}")
+            from .rawusb import RawUsbError
+            for attempt in (1, 2):
                 try:
-                    bver = tuple(alink.block_version(idx))
-                    log(f"block {idx} version check: "
-                        f"{'. '.join(map(str, bver))}")
-                except AirohaError as exc:
-                    log(f"block {idx} version check: {exc} (continuing)")
-                # NOTE: no NOP here — live 0x3220 never echoes cmd 0x00
-                # (unsupported in the [01 3C cmd] framing) and sending it
-                # precedes every observed "0x06 status=2" rejection.
-                alink.start_block()
-                update_image(alink, data, image,
-                             progress=lambda d, t: log(f"  {d * 100 // t}%")
-                             if d == t else None, log=log, close="stage")
-                wrote = True
-                break
-            except AirohaResetError as exc:
-                # every chunk CRC matched; the device died at verify
-                # because it APPLIED the block and re-enumerated.
-                # Re-open and move on to the next block (no re-send).
-                log(f"block {idx} applied by device ({exc})")
-                if mesh_reopen is None:
-                    raise Sc2Error(f"block {idx} applied but link died") from exc
+                    try:
+                        bver = tuple(alink.block_version(idx))
+                        log(f"block {idx} version check: "
+                            f"{'. '.join(map(str, bver))}")
+                    except AirohaError as exc:
+                        log(f"block {idx} version check: {exc} (continuing)")
+                    alink.start_block()
+                    update_image(alink, data, image,
+                                 progress=lambda d, t: log(f"  {d * 100 // t}%")
+                                 if d == t else None, log=log, close="stage")
+                    wrote = mesh_wrote = True
+                    break
+                except AirohaResetError as exc:
+                    log(f"block {idx} applied by device ({exc})")
+                    if mesh_reopen is None:
+                        raise Sc2Error(f"block {idx} applied but link died") from exc
+                    mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
+                    alink = AiroLink(mesh_handle, timeout=20.0)
+                    sm_ver = airo_ready(alink, log=log)
+                    wrote = mesh_wrote = True
+                    break
+                except (AirohaError, RawUsbError) as exc:
+                    log(f"block {idx} attempt {attempt} failed: {exc}")
+                    if attempt == 2 or mesh_reopen is None:
+                        raise Sc2Error(f"block {idx} failed: {exc}") from exc
+                    log("reopening mesh interface (device may have reset)")
+                    mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
+                    alink = AiroLink(mesh_handle, timeout=20.0)
+                    sm_ver = airo_ready(alink, log=log)
+            if wrote and mesh_reopen is not None:
+                time.sleep(2.0)
                 mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
                 alink = AiroLink(mesh_handle, timeout=20.0)
                 sm_ver = airo_ready(alink, log=log)
-                wrote = True
-                break
+        # mesh commit for staged submesh blocks (vendor 0x07/0x08 on A)
+        if not mesh_wrote:
+            log("mesh: nothing staged, no commit")
+        else:
+            log("commit mesh blocks (0x07, 0x08)")
+            try:
+                alink.run_loader()
+                log("run-loader acked")
             except (AirohaError, RawUsbError) as exc:
-                # mid-block death: re-open and re-send this block once
-                # (staging is idempotent; block_version re-runs first).
-                log(f"block {idx} attempt {attempt} failed: {exc}")
-                if attempt == 2 or mesh_reopen is None:
-                    raise Sc2Error(f"block {idx} failed: {exc}") from exc
-                log("reopening mesh interface (device may have reset)")
-                mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
-                alink = AiroLink(mesh_handle, timeout=20.0)
-                sm_ver = airo_ready(alink, log=log)
-        # The device applies the block and re-enumerates shortly after
-        # the verify/result sequence (live: 0x3220 vanished ~1 s after
-        # 0x0A and was back ~5 s later); the vendor re-opens after every
-        # block (retry loop at 0x10003c204). Do the same before the next
-        # block so staging state is fresh.
-        if wrote and mesh_reopen is not None:
-            time.sleep(2.0)
-            mesh_handle = _reopen_mesh(mesh_handle, mesh_reopen, log)
-            alink = AiroLink(mesh_handle, timeout=20.0)
-            sm_ver = airo_ready(alink, log=log)
-
-    if wrote:
-        # single commit for all staged blocks: 0x07 run-loader, 0x08,
-        # then the B-side reboot for the CSR chip.
-        log("commit staged blocks (0x07, 0x08)")
-        try:
-            alink.run_loader()
-            log("run-loader acked")
-        except (AirohaError, RawUsbError) as exc:
-            log(f"run-loader: {exc}")
-        try:
-            alink.verify()
-            log("mesh 0x08 acked")
-        except (AirohaError, RawUsbError) as exc:
-            log(f"mesh 0x08: {exc} (device likely rebooting)")
-        main_handle.write_bulk(CMD_REBOOT)
-        rep = main_handle.read_bulk(timeout_ms=1500)
-        log(f"B 0x08 reply: {rep[:8].hex() if rep else '-'}")
+                log(f"run-loader: {exc}")
+            try:
+                alink.verify()
+                log("mesh 0x08 acked")
+            except (AirohaError, RawUsbError) as exc:
+                log(f"mesh 0x08: {exc} (device likely rebooting)")
     log("done")
     return wrote
 

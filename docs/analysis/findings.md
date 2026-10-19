@@ -256,7 +256,69 @@ reply wait) → `0x07` run-loader (commit) → `0x08` reboot. No 0x5B, no
   The DFU wire protocol (DFU_READ/DFU_WRITE, PS keys, BCSP/H4) is the standard
   BlueCore DFU protocol from the CSR SDK.
 
-## SC2 update flow, decoded [derived from threadMethodUpdate: 0x10003f824–0x100041600 + transport helpers 0x100108a4f–0x100109205]
+## SC2V2 vendor flow, fully reconstructed (2026-10-19) [derived from threadMethodUpdate: default path for deviceTarget 0x3217; validated live with tools/re/csr_full.py]
+
+**Dispatch**: all SC2-family PIDs 0x3210–0x321C share one entry
+(0x10003e3dc–0x10003e54d → 0x10003e54d "BBBBB"). Inside, chains of
+`cmp deviceTarget, PID` only branch for *other* families; 0x3217 falls
+through every chain (`jne` default) to 0x100040b50 → **QCC-BT phase**
+(~0x10004b900–0x10004d600). Handle slot 0 is the **B side (0x3217)** here
+(opened via `sub_1001086ec` at 0x10004ad10) — no mesh handle needed for
+main images.
+
+**Frame semantics (correction to the 2026-10-18 notes)**: `sub_100108c1b`
+does NOT write 0xFF into the command frame — the 0xFF sentinel is written
+into the **reply buffer** at [2] before reading. Vendor frames are
+`[01 cmd 00 00 ...]` zero-padded, 1023 B. Reply = pushed EP1 report
+`[02 echo status ...]`; success = reply[2]==0; busy (reply[2]==1) retried
+by re-reading. (Our earlier `[01 cmd FF ...]` frames were tolerated for
+queries but made `0x07` commit a silent no-op: the vendor commit frame is
+`[01 07 00 ...]`, see `mov byte [rbp-0xade], 0` before 0x10004cc18.)
+
+**Sequence for 0x3217** (address order = execution order):
+
+1. `0x0A` GET_DFU_RESULT peek; `0x01` version vs container; skip if same.
+2. **Update session** (0x10004bb8c+): `0x20` start → `0x22` poll loop
+   (25 tries, usleep(1 ms); reply[3]==1 special-case) → `0x21` confirm
+   (failure branch retries, logging "1. --------UPDATE START MESH HANDLE
+   FIND" @0x1002190c0). Before download: second pair `0x21` `0x20`
+   (0x10004c5b7/0x10004c5e3).
+3. **CSR download per image** (loop body 0x10004b168; second copy
+   0x10004cb34+): `0x05` start → chunks via `sub_100108a4f` write-only
+   `[01 06 lenBE16 data]`, len ≤ 0x3FB (1019), **length at [2..3] BE**
+   (`rol r14w,8; mov word [rbp-0xade], r14w`), data at [4..]; last chunk
+   cmd `0x0E` ("writeLAST") when offset+len == image size; per-chunk ack
+   via `sub_100108a72` (read 67 B; retry while status==1; a read error
+   also exits the ack wait — the vendor keeps streaming).
+4. Commit `0x07` `[01 07 00]` ("QCC BT Runloader Start VP 2"), reboot
+   `0x08` `[01 08 00]`, reopen B (`sub_1001086ec`, 13x), `0x0A` result,
+   version compare ("VP (v..) vs (v..)", "VP GOGO").
+5. Submesh (type-3 image) via the Airoha mesh transport-A block loop
+   (0x100045728, 58 B chunks `[01 3C 06 len data]`, double CRC16) —
+   confirmed working live earlier.
+
+**Transport shim internals** (`sub_10012e44c` write / `sub_10012e68e`
+read): handle object = {0x00 IOHIDDevice*, 0x10 error flag, 0x40 buffered
+file*, 0x90 timeout}. Writes = HID output report id1, full length (1023);
+reads = 67-byte input (GET_REPORT or EP). 0x3220's descriptor declares
+61-byte reports → 1023 B SET_REPORT to it times out; 0x3217 accepts 1023 B
+on EP2 OUT (bulk-ish interrupt); control SET/GET_REPORT on 0x3217 = EPIPE.
+
+**Live status map on 0x3217 (frames `[01 cmd 00]`)**: OK(0): 0x01(version),
+0x02(+4 B payload), 0x03, 0x05, 0x06/0x0E (ack), 0x07, 0x08, 0x0A(payload
+[3]=2), 0x50, 0x51, 0x60(payload [3]=8). Refused(2): 0x0F, 0x10, 0x11,
+0x12, 0x13, 0x20, 0x21, 0x22, 0x40, 0x5A, 0x5B. Chunk acks [02 06 00]
+appear only with correct `[lenBE]` framing — with garbage length the
+device answers but discards data (silent-inert).
+
+**Hardware precondition (the user's unit)**: `0x12` (rV), `0x0F`,
+`0x20/0x21/0x22` all status 2 regardless of ordering/params; headset does
+not power on at all (dead/removed battery); commits `0x07` and the `0x0E`
+finalization answer 0/2 but never apply. Conclusion: the vendor flow has a
+**battery/power safety gate**; the vendor app fails identically on this
+unit. Update validation requires a working battery (or another unit).
+
+## SC2 update flow, decoded 2026-10-18 (SUPERSEDED — kept for history; the "SC2V2 vendor flow, fully reconstructed" section above is authoritative for 0x3217; this section still describes the other CSR families) [derived from threadMethodUpdate: 0x10003f824–0x100041600 + transport helpers 0x100108a4f–0x100109205]
 
 Three HID transport variants, all indexing a global device-handle table at
 **0x1002518d0** (slot 0 in every flow):

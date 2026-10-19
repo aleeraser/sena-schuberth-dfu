@@ -134,15 +134,21 @@ class FakeSc2:
 
 
 class FakeSc2V2:
-    """0x3217 raw-USB model, layout confirmed live 2026-10-18:
-    pushed EP1 replies [0x02, echo cmd, status, payload...]; 0x0F is
-    rejected with status 2 in normal mode; runloader/reboot answer
-    nothing (device reboots)."""
+    """0x3217 raw-USB model per vendor-static analysis + live probing
+    (2026-10-19): pushed EP1 replies [0x02, echo cmd, status, payload...];
+    frames are [01 cmd 00 ...] zero-padded. Session commands 0x20/0x21/0x22
+    answer status 2 unless `powered_on` (live charge-mode device with a
+    dead battery answers 2). CSR chunks [01 06 lenBE16 data] stage into
+    .staging; 0x07 commits the staged image into .applied; 0x08 answers
+    nothing (device restarts)."""
 
-    def __init__(self, version=(2, 3, 2, 1)):
+    def __init__(self, version=(2, 3, 2, 1), powered_on=True):
         self.version = version
+        self.powered_on = powered_on
         self.cmds = []
-        self.chunks = bytearray()
+        self.staging = bytearray()
+        self.applied = []          # one entry per committed image
+        self.reboots = 0
         self._pending = None
 
     def close(self):
@@ -150,8 +156,9 @@ class FakeSc2V2:
 
     def write_bulk(self, cmd, params=b""):
         self.cmds.append(cmd)
-        if cmd in (0x07, 0x08):
-            self._pending = None            # no reply: device resets
+        if cmd == 0x08:
+            self._pending = None            # no reply: device restarts
+            self.reboots += 1
             return
         rep = bytearray(16)
         rep[0] = 0x02
@@ -159,11 +166,17 @@ class FakeSc2V2:
         rep[2] = 0
         if cmd == 0x01:
             rep[3:7] = bytes(list(self.version))
-        elif cmd == 0x0F:
-            rep[2] = 2                      # live: rejected pre-session
-        elif cmd == 0x06:
-            length = params[1]
-            self.chunks += params[2:2 + length]
+        elif cmd in (0x20, 0x21, 0x22, 0x0F, 0x10, 0x12):
+            if not self.powered_on:
+                rep[2] = 2                  # live: charge-mode refusal
+        elif cmd == 0x05:
+            self.staging = bytearray()
+        elif cmd in (0x06, 0x0E):
+            length = struct.unpack(">H", params[:2])[0]
+            self.staging += params[2:2 + length]
+        elif cmd == 0x07:
+            self.applied.append(bytes(self.staging))
+            self.staging = bytearray()
         self._pending = bytes(rep)
 
     def read_bulk(self, timeout_ms=3000):

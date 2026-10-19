@@ -112,27 +112,71 @@ def sc2v2_container():
     return data, parse_sena_container(data), (main_blob, vp_blob, sub_blob)
 
 
-def test_sc2v2_streams_all_blocks_through_airoha():
+def test_sc2v2_main_images_stream_over_b(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
     data, container, (main_blob, vp_blob, sub_blob) = sc2v2_container()
-    main, mesh = FakeSc2V2(version=(2, 3, 2, 1)), FakeAiroha(version=(0, 4, 0, 0, 4))
+    main = FakeSc2V2(version=(2, 3, 2, 1))
+    mesh = FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, mesh, container, data) is True
-    assert main.chunks == b""                       # B is inert for writes
-    assert mesh.written == main_blob + vp_blob      # blocks 0+1 via A
-    assert 0x06 not in [c for c in main.cmds]
-    assert main.cmds == [0x01, 0x0F, 0x08]          # version, start, reboot
-    # submesh block skipped on version match: no 0x06 for its bytes
-    assert sub_blob not in mesh.written
+    assert main.applied == [main_blob, vp_blob]  # both via B CSR download
+    assert main.reboots == 2
+    assert mesh.written == b""                   # submesh same-version: skip
+    # vendor session handshake before any staging
+    i20, i05 = main.cmds.index(0x20), main.cmds.index(0x05)
+    assert i20 < i05
+    assert all(c in main.cmds for c in (0x22, 0x21, 0x0E, 0x07, 0x08, 0x0A))
 
 
-def test_sc2v2_skips_when_current():
+def test_sc2v2_charge_mode_refuses_session(monkeypatch):
+    import pytest
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    from schuberth_dfu.sc2flow import Sc2Error, update_sc2v2
+    from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
+    data, container, _ = sc2v2_container()
+    # like the live dead-battery device: session cmds answer status 2
+    main = FakeSc2V2(version=(2, 3, 2, 1), powered_on=False)
+    mesh = FakeAiroha(version=(0, 4, 0, 0, 4))
+    with pytest.raises(Sc2Error, match="powered on"):
+        update_sc2v2(main, mesh, container, data)
+    for untouched in (0x05, 0x06, 0x0E, 0x07):   # no flash-touching cmds
+        assert untouched not in main.cmds
+
+
+def test_sc2v2_skips_when_current(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
     data, container, _ = sc2v2_container()
     main, mesh = FakeSc2V2(version=(2, 4, 0, 0)), FakeAiroha(version=(0, 4, 0, 0, 4))
     assert update_sc2v2(main, mesh, container, data) is False
-    assert main.cmds == [0x01] and mesh.cmds == []
+    assert main.cmds == [0x01]
+    assert mesh.written == b""
+
+
+def test_sc2v2_submesh_streams_via_mesh(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    from schuberth_dfu.sc2flow import update_sc2v2
+    from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
+    data, container, (_, _, sub_blob) = sc2v2_container()
+    main = FakeSc2V2(version=(2, 4, 0, 0))        # main up to date: skip
+    mesh = FakeAiroha(version=(0, 3, 0, 0, 3))    # submesh differs
+    assert update_sc2v2(main, mesh, container, data) is True
+    assert mesh.written == sub_blob
+    assert main.cmds == [0x01]                    # B untouched beyond version
+
+
+def test_csr_download_chunking_1019_with_last_marker():
+    from schuberth_dfu.sc2flow import MeshLink, csr_download
+    from schuberth_dfu.sim import FakeSc2V2
+    dev = FakeSc2V2()
+    link = MeshLink(dev, busy_delay=0, busy_retries=10)
+    blob = os.urandom(2500)
+    csr_download(link, blob)
+    assert bytes(dev.staging) == blob
+    assert dev.cmds.count(0x06) == 2              # ceil(2500/1019) - 1
+    assert dev.cmds.count(0x0E) == 1              # final chunk marked
 
 
 def test_parse_submesh_image_version():
@@ -160,11 +204,12 @@ def test_airo_ready_retries_flaky_interface():
     assert airo_ready(link, retries=5, delay=0) == (0, 4, 0, 0, 4)
 
 
-def test_sc2v2_death_at_block_start_reopens_and_resends():
+def test_sc2v2_death_at_block_start_reopens_and_resends(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
     from schuberth_dfu.rawusb import RawUsbError
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
-    data, container, (main_blob, vp_blob, _) = sc2v2_container()
+    data, container, (_, _, sub_blob) = sc2v2_container()
 
     class ResettingAiroha(FakeAiroha):
         """Dies once, at the block-start cmd of block 0."""
@@ -174,20 +219,21 @@ def test_sc2v2_death_at_block_start_reopens_and_resends():
                 raise RawUsbError("I/O error")
             return super().write_report(d)
 
-    main = FakeSc2V2(version=(2, 3, 2, 1))
-    first = ResettingAiroha(version=(0, 4, 0, 0, 4))
-    second = FakeAiroha(version=(0, 4, 0, 0, 4))
+    main = FakeSc2V2(version=(2, 4, 0, 0))          # main skip: mesh-only run
+    first = ResettingAiroha(version=(0, 3, 0, 0, 3))
+    second = FakeAiroha(version=(0, 3, 0, 0, 3))
     assert update_sc2v2(main, first, container, data,
                         mesh_reopen=lambda: second) is True
-    assert first.written == b""              # died before any chunk
-    assert second.written == main_blob + vp_blob  # both blocks re-staged
+    assert first.written == b""                     # died before any chunk
+    assert second.written == sub_blob               # block re-staged
 
 
-def test_sc2v2_midblock_death_resends_the_block():
+def test_sc2v2_midblock_death_resends_the_block(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
     from schuberth_dfu.rawusb import RawUsbError
     from schuberth_dfu.sc2flow import update_sc2v2
     from schuberth_dfu.sim import FakeAiroha, FakeSc2V2
-    data, container, (main_blob, vp_blob, _) = sc2v2_container()
+    data, container, (_, _, sub_blob) = sc2v2_container()
 
     class FlakyAiroha(FakeAiroha):
         """Dies mid-stream (second chunk), before anything is committed."""
@@ -196,10 +242,10 @@ def test_sc2v2_midblock_death_resends_the_block():
                 raise RawUsbError("I/O error")
             return super().write_report(d)
 
-    main = FakeSc2V2(version=(2, 3, 2, 1))
-    first = FlakyAiroha(version=(0, 4, 0, 0, 4))
-    second = FakeAiroha(version=(0, 4, 0, 0, 4))
+    main = FakeSc2V2(version=(2, 4, 0, 0))
+    first = FlakyAiroha(version=(0, 3, 0, 0, 3))
+    second = FakeAiroha(version=(0, 3, 0, 0, 3))
     assert update_sc2v2(main, first, container, data,
                         mesh_reopen=lambda: second) is True
-    assert first.written == main_blob[:58]     # died after 1 chunk
-    assert second.written == main_blob + vp_blob  # block 0 re-sent whole
+    assert first.written == sub_blob[:58]           # died after 1 chunk
+    assert second.written == sub_blob               # block re-sent whole
