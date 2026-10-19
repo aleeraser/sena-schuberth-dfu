@@ -32,8 +32,10 @@ sudo cp udev/99-schuberth-dfu.rules /etc/udev/rules.d/
 # make sure your user is in the plugdev group
 ```
 
-The SC2V2 raw-USB path additionally needs root (it detaches `hid-generic`
-from the interfaces): run `version`/`update` with `sudo` or `pkexec`.
+The SC2V2/SC1 raw-USB path additionally needs permission on the USB
+device nodes (it detaches `hid-generic`): install the udev rule below
+(one-time, then no root is needed), or run `version`/`update` with
+`sudo`/`pkexec`.
 
 ## Usage
 
@@ -42,7 +44,7 @@ schuberth-dfu detect                 # list connected supported headsets
 schuberth-dfu check SC2              # latest firmware for product SC2
 schuberth-dfu check SC2 --all-revisions
 schuberth-dfu download SC2 -o sc2.img  # download + verify all MD5s
-schuberth-dfu version                # live versions (SC2V2, read-only, root)
+schuberth-dfu version                # live versions (SC2V2, read-only)
 schuberth-dfu update --image sc2.img --yes   # flash connected device
 schuberth-dfu selftest       # run both update flows against simulated devices
 ```
@@ -55,7 +57,9 @@ Product names are the internal catalog keys (see
 | Product | PID | Family | Status |
 |---|---|---|---|
 | SC2 | 0x3170 | CSR | flow implemented (experimental, untested on hw) |
-| SC2V2 | 0x3217 | CSR | transport + commands confirmed on live hw; raw-USB flow (see README note) |
+| SC2V2 | 0x3217 | CSR | **updated a live device 2.3.2.1 → 2.4.0.0** (vendor-exact flow) |
+| SC1A / SC10U / SC1S | 0x5622 / 0x5623 / 0x5624 | SC1 | static vendor model implemented + sim-tested; live hw test pending |
+| SC1M | 0x6400 | SC1 | same generic flow (device_id from its v1.1 container); hw test pending |
 | ST1/S1/M1 EVO/C30/… | various | Airoha | command+block loop implemented (untested on hw) |
 | PRISM | 0x3020 | camera | later (ticket 10) |
 

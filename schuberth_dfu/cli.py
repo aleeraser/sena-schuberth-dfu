@@ -101,7 +101,8 @@ def cmd_version(args) -> int:
 
 def cmd_update(args) -> int:
     from .transport import Handle, scan  # lazy: hidapi only for hardware
-    from .catalog import (FAMILY_AIROHA, FAMILY_CSR, family_for_pid)
+    from .catalog import (FAMILY_AIROHA, FAMILY_CSR, FAMILY_SC1,
+                          family_for_pid)
 
     devices = scan()
     if not devices:
@@ -134,7 +135,7 @@ def cmd_update(args) -> int:
     print(f"container {container.version}: "
           + ", ".join(f"{i.name or i.type}" for i in container.images))
 
-    if fam not in (FAMILY_AIROHA, FAMILY_CSR):
+    if fam not in (FAMILY_AIROHA, FAMILY_CSR, FAMILY_SC1):
         print(f"family {fam!r} update flow not implemented")
         return 2
 
@@ -146,19 +147,24 @@ def cmd_update(args) -> int:
     def log(msg: str) -> None:
         print(msg, flush=True)
 
-    if dev.product_id == 0x3217:
-        # SC2V2: kernel HID path unusable (malformed descriptors) -> raw
-        # USB control/interrupt transfers; needs root (hid-generic detach).
-        # The whole update runs on the 0x3217 interface (0x3220 is not
-        # touched; see sc2flow module docstring).
+    if dev.product_id == 0x3217 or fam == FAMILY_SC1:
+        # SC2V2/SC1: kernel HID path unusable (malformed descriptors) ->
+        # raw USB control/interrupt transfers; needs the udev rule or root
+        # (hid-generic detach). The whole update runs on the main
+        # interface (companion PIDs like 0x3220 are not touched).
         from .rawusb import RawHandle, RawUsbError
-        from .sc2flow import Sc2Error, update_sc2v2
+        if dev.product_id == 0x3217:
+            from .sc2flow import Sc2Error, update_sc2v2 as update_flow
+        else:
+            from .sc2flow import Sc2Error, update_sc1 as update_flow
+            log("SC1 family: flow derived from the vendor binary "
+                "(static model); not yet hardware-verified — report issues")
         try:
-            update_sc2v2(RawHandle(0x3217), container, data, log=log,
-                         force=args.force,
-                         reopen=lambda: RawHandle(0x3217))
+            update_flow(RawHandle(dev.product_id), container, data,
+                        log=log, force=args.force,
+                        reopen=lambda: RawHandle(dev.product_id))
         except (RawUsbError, Sc2Error) as exc:
-            print(f"SC2V2 flow failed: {exc}")
+            print(f"{fam.upper()} flow failed: {exc}")
             return 1
         log("update complete")
         return 0

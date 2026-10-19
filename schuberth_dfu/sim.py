@@ -192,3 +192,26 @@ class FakeSc2V2:
             busy[2] = 1
             return bytes(busy)
         return rep or b""
+
+
+class FakeSc1(FakeSc2V2):
+    """SC1A (0x5622): same B-interface model as FakeSc2V2 plus the
+    session commands the SC1 firmware implements (0x20/0x21/0x50 ->
+    status 0; ticket-08 static model). `accept_session=False` mimics
+    firmware that answers status 2 (abort path, staging never starts).
+    .session marks the session cmds in arrival order."""
+
+    def __init__(self, version=(2, 0, 0, 0), target=(2, 1, 1, 0),
+                 accept_session=True, **kw):
+        super().__init__(version=version, target=target, **kw)
+        self.accept_session = accept_session
+        self.session = []
+
+    def write_bulk(self, cmd, params=b""):
+        super().write_bulk(cmd, params)
+        if cmd in (0x20, 0x21, 0x50):
+            self.session.append(cmd)
+            if not self.accept_session:
+                rep = bytearray(self._pending)
+                rep[2] = 2
+                self._pending = bytes(rep)

@@ -44,8 +44,12 @@ CMD_RESULT = 0x0A
 CMD_DFU_START = 0x05
 CMD_START = 0x0F
 CMD_RV = 0x12
-# 0x20/0x21/0x22 (session) and 0x0E (write-last) are PRISM-family commands,
-# never sent on 0x3217 — kept out of this module's vocabulary on purpose.
+# Session commands: implemented by the SC1 family (ticket 08) and PRISM
+# (0x55xx/0x3060, ticket 10); SC2V2 (0x3217) answers status 2 to these and
+# the vendor never sends them there. 0x0E (write-last) is PRISM/50S-only.
+CMD_SESSION_START = 0x20
+CMD_BT_MODULE_FIND = 0x21
+CMD_ARM_MESH = 0x50
 
 CSR_CHUNK_LEN = 0x3FB         # 1019 B payload (vendor 0x100045964: mov eax,0x3fb)
 MESH_CHUNK_LEN = 0x3D         # 61 bytes (0x100041452)
@@ -168,6 +172,51 @@ def airo_ready(alink, *, retries: int = 13, delay: float = 1.5,
     raise Sc2Error("airoha interface never became ready")
 
 
+def _stage_and_commit(link: MeshLink, images, data: bytes,
+                      log: Callable[[str], None]) -> None:
+    """Vendor per-image CSR download loop, shared by SC2V2 (0x10005d2b0)
+    and SC1 (0x10004cb34): 0x05 [2=flag], 0x06 chunks [lenBE16 data]
+    with echo-matched busy-ack, 0x07 commit. Aborts on the first ack
+    with status != 0 — before any commit."""
+    for idx, image in enumerate(images):
+        blob = image.blob(data)
+        log(f"staging image {idx} {image.name or '-'} type={image.type} "
+            f"flag={image.flag} size={image.size:#x}")
+        link.bulk(CMD_DFU_START, bytes([image.flag & 0xFF]), echo=True)
+        off = 0
+        while off < len(blob):
+            chunk = blob[off:off + CSR_CHUNK_LEN]
+            link.bulk(CMD_WRITE, len(chunk).to_bytes(2, "big") + chunk,
+                      echo=True)
+            off += len(chunk)
+            if off == len(blob):
+                log(f"  image {idx}: {len(blob)} B staged")
+        link.bulk(CMD_RUNLOADER, echo=True)
+        log(f"image {idx} committed (0x07)")
+
+
+def _wait_after_reboot(main_handle, link, reopen, log):
+    """The device re-enumerates after 0x08 (observed ~40 s on SC2V2);
+    hand back a link on a fresh handle when `reopen` is provided."""
+    if reopen is None:
+        return link
+    try:
+        main_handle.close()
+    except Exception:
+        pass
+    main_handle = None
+    for i in range(120):
+        try:
+            main_handle = reopen()
+            break
+        except Exception as exc:
+            log(f"reopen retry {i + 1}/120: {exc}")
+            time.sleep(2)
+    if main_handle is None:
+        raise Sc2Error("device never came back after reboot")
+    return MeshLink(main_handle)
+
+
 def update_sc2v2(main_handle, container, data: bytes,
                  *, log: Optional[Callable[[str], None]] = None,
                  force: bool = False,
@@ -191,22 +240,7 @@ def update_sc2v2(main_handle, container, data: bytes,
 
     log("vendor sleep(5) (0x10005d2b0)")
     time.sleep(5)
-    for idx, image in enumerate(container.images):
-        blob = image.blob(data)
-        log(f"staging image {idx} {image.name or '-'} type={image.type} "
-            f"flag={image.flag} size={image.size:#x}")
-        link.bulk(CMD_DFU_START, bytes([image.flag & 0xFF]), echo=True)
-        off = 0
-        while off < len(blob):
-            chunk = blob[off:off + CSR_CHUNK_LEN]
-            link.bulk(CMD_WRITE, len(chunk).to_bytes(2, "big") + chunk,
-                      echo=True)
-            off += len(chunk)
-            if off == len(blob):
-                log(f"  image {idx}: {len(blob)} B staged")
-        link.bulk(CMD_RUNLOADER, echo=True)
-        log(f"image {idx} committed (0x07)")
-
+    _stage_and_commit(link, container.images, data, log)
     log("vendor sleep(5) (0x10005e900)")
     time.sleep(5)
     try:
@@ -214,23 +248,64 @@ def update_sc2v2(main_handle, container, data: bytes,
     except Sc2Error as exc:
         log(f"reboot reply: {exc} (device restarts on commit)")
     time.sleep(1)
+    link = _wait_after_reboot(main_handle, link, reopen, log)
+    new = read_version(link, echo=True)
+    log(f"main version now: {'.'.join(map(str, new))}")
+    return True
 
-    if reopen is not None:  # the device re-enumerates; get a fresh handle
+
+def update_sc1(main_handle, container, data: bytes,
+               *, log: Optional[Callable[[str], None]] = None,
+               force: bool = False,
+               reopen: Optional[Callable[[], object]] = None) -> bool:
+    """SC1 family (SC1A 0x5622 / SC10U 0x5623 / SC1S 0x5624), static
+    vendor model of ticket 08 (NOT yet hardware-verified — the live
+    session replies can only be confirmed on real SC1 hardware).
+
+    Same B-side CSR download as update_sc2v2, preceded by the vendor
+    session preamble the SC1 firmware implements
+    (0x10004bf5a..0x10004cc38):
+      0x01 -> 0x21 + 0x50 (best-effort, vendor retries while logging
+      "UPDATE START MESH HANDLE FIND") -> sleep(2) -> 0x21 -> sleep(10)
+      -> 0x20 -> sleep(15); hard-fail aborts are 0x10004ed7d/0x10004eea1.
+    The vendor image loop covers only the first TWO container entries
+    (`cmp r12,2` at 0x10004cc41; SC1 containers hold exactly main + vp).
+    """
+    log = log or (lambda s: None)
+    link = MeshLink(main_handle)
+    ver = read_version(link, echo=True)
+    target = parse_container_version(container.version)
+    log(f"main version: {'.'.join(map(str, ver))} -> target "
+        f"{'.'.join(map(str, target))}")
+    if ver == target and not force:
+        log("main: VERSION IS SAME, UPDATE SKIP")
+        return False
+
+    link.bulk(CMD_VERSION, echo=True)         # 0x10004bf5a
+    for cmd in (CMD_BT_MODULE_FIND, CMD_ARM_MESH):
         try:
-            main_handle.close()
-        except Exception:
-            pass
-        main_handle = None
-        for i in range(120):
-            try:
-                main_handle = reopen()
-                break
-            except Exception as exc:
-                log(f"reopen retry {i + 1}/120: {exc}")
-                time.sleep(2)
-        if main_handle is None:
-            raise Sc2Error("device never came back after reboot")
-        link = MeshLink(main_handle)
+            link.bulk(cmd, echo=True)
+        except Sc2Error as exc:
+            log(f"session cmd {cmd:#02x}: {exc} "
+                "(vendor retries in mesh-handle-find loop; continuing)")
+    time.sleep(2)
+    link.bulk(CMD_BT_MODULE_FIND, echo=True)  # 0x10004c5b7 (hard)
+    time.sleep(10)
+    link.bulk(CMD_SESSION_START, echo=True)   # 0x10004c5e3 (hard)
+    time.sleep(15)
+
+    images = container.images[:2]
+    if len(container.images) > 2:
+        log(f"note: {len(container.images)} images in container; vendor "
+            "loop covers only the first 2")
+    _stage_and_commit(link, images, data, log)
+
+    try:
+        link.bulk(CMD_REBOOT, b"\x00", echo=True)   # 0x10004cc6e, did_any-gated
+    except Sc2Error as exc:
+        log(f"reboot reply: {exc} (device restarts on commit)")
+    time.sleep(1)
+    link = _wait_after_reboot(main_handle, link, reopen, log)
     new = read_version(link, echo=True)
     log(f"main version now: {'.'.join(map(str, new))}")
     return True

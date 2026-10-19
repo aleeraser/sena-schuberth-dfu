@@ -15,6 +15,7 @@ FAMILY_AIROHA = "airoha"
 FAMILY_CSR = "csr"
 FAMILY_QCC_MESH = "qcc_mesh"
 FAMILY_PRISM = "prism"
+FAMILY_SC1 = "sc1"
 
 # Device family per PID, from the update-flow dispatch in
 # -[UpdateViewController threadMethodUpdate:] (findings.md).
@@ -23,6 +24,11 @@ _FAMILIES = {
     0x3217: FAMILY_CSR,       # SC2V2 (recovered from container model id)
     0x321B: FAMILY_QCC_MESH,  # QCC_SC2
     0x3020: FAMILY_PRISM,     # PRISM
+    0x5622: FAMILY_SC1,       # SC1A  (ticket 08: static model, live test pending)
+    0x5623: FAMILY_SC1,       # SC10U
+    0x5624: FAMILY_SC1,       # SC1S
+    0x6400: FAMILY_SC1,       # SC1M  (device_id from its v1.1 container;
+                                #      same exclusion-chain continuation)
     0x6510: FAMILY_AIROHA,    # ST1
     0x6840: FAMILY_AIROHA,    # AIROHASURGE
 }

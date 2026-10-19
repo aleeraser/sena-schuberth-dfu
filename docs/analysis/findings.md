@@ -313,6 +313,34 @@ read error → fail); `sub_100108c1b` = write + blocking echo read;
 0x10013c855 = `sleep(edi)` thunk. The vendor app has **no timeouts
 anywhere** in this loop — all pacing is device-driven.
 
+## SC1 family flow (ticket 08, 2026-10-20) [derived from threadMethodUpdate: exclusion chain 0x1000443a0–0x1000446c0 → 0x1000446c6; static model, live test pending]
+
+SC1A (0x5622) / SC10U (0x5623) / SC1S (0x5624) — plus the 0x55xx/0x30xx/
+0x6210/0x6400/0x53xx/0x59xx Sena lines — join the generic continuation
+at **0x1000446c6**: open slot-0 handle (sub_1001086ec) → optional aux
+"Airoha-style" slot-1 handle (sub_100108544, guarded) → `0x01` version
+→ compare (equal = skip) → `0x01` on slot 1 (log) → block-table parse
+(sub_10010ebf8) → session preamble `0x01` → `0x21`(best-effort) +
+`0x50`(best-effort, "UPDATE START MESH HANDLE FIND" @0x1000514e1) →
+sleep2 `0x21` (hard, abort 0x10004ed7d) → sleep10 `0x20` (hard, abort
+0x10004eea1) → sleep15 → **per-image CSR download identical to the
+SC2V2 live-verified framing** (0x05 [2=flag]/0x06 lenBE chunks/0x07),
+image loop capped at 2 (`cmp r12,2` 0x10004cc41) → `0x08` (did_any
+gated) → reopen. So: SC1 firmware implements the session cmds that
+SC2V2 answers status 2 to; everything else is the same B-side layer.
+The transport-C 61-byte `update_sc2()` model was never for these PIDs.
+
+Live manifest (checked 2026-10-20): SC1A v2.1.1, SC1S v2.1, SC10U v2.1,
+SC1M v1.1; container SC1A-v2.1.1-build2.img = device_id 0x5622, 2
+images (SC1A.img flag 0 + vp_en.bin flag 1), MD5s verified.
+Implementation: `sc2flow.update_sc1()` (sim-tested; NOT yet verified on
+hardware). Vendor dialog lists "SC1M" next to SC2 ("Leave it powered
+off"): SC1M v1.1 container (inspected 2026-10-20) carries device_id
+**0x6400** with 2 images (flags 0,1) — 0x6400 sits in the same exclusion
+chain, so SC1M rides this generic flow too (mapped FAMILY_SC1; the
+session cmds are hard-fail there — 0x10004ed7d/0x10004eea1 confirmed as
+log-and-abort loops — so SC1M firmware must implement them).
+
 ### History (superseded): the 2026-10-19 "fully reconstructed" model, PRISM branch misread as 0x3217 [derived from threadMethodUpdate: default path for deviceTarget 0x3217; validated live with tools/re/csr_full.py]
 
 **Dispatch**: all SC2-family PIDs 0x3210–0x321C share one entry

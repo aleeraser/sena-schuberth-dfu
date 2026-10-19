@@ -16,8 +16,11 @@ gate" and "session handshake" model was a misread — the 0x20/0x21/0x22/
 0x0E commands belong to the PRISM family; 0x3217's real flow is a simple
 per-image `0x05 [2=flag] / 0x06 chunks / 0x07` loop for ALL container
 images over the 0x3217 interface, one `0x08` at the end (details §5/§6).
-Remaining work: other device families (tickets 08/09/10) and the UI
-decision (ticket 03).
+Remaining work: other device families — ticket 08
+(SC1A/SC10U/SC1S/SC1M) is RE-searched and implemented (`update_sc1`,
+sim-tested, **live hw validation pending**); tickets 09 (QCC/PARTDATA
+container) and 10 (PRISM, BT transport) are open; 07 (Airoha block
+table) is offline research.
 
 ## 2. Quickstart (fresh shell)
 
@@ -218,11 +221,14 @@ headset's main system must be powered on with a working battery…`
    version → should print SKIP; with --force it should re-flash cleanly).
    Nothing else stands between us and "SC2V2 supported" — the CLI flow
    code is what csr11 proved on hardware.
-2. Offline (unblocked): ticket 09 PARTDATA grammar, 08 SC1 flow,
-   10 PRISM (the 0x55xx handshake region 0x10004bb8c–0x10005f1e2 is now
-   mapped for that ticket), then UI decision (ticket 03).
-3. If a future unit shows chunk-ack status 2 mid-staging: sc2flow aborts
-   before any commit (safe); investigate that unit's flash state.
+2. SC1 hardware whenever available (0x5622/0x5623/0x5624 or SC1M
+   0x6400): `schuberth-dfu update --image firmware/sc1a-2.1.1.img --yes`
+   — the flow is the ticket-08 static model (`update_sc1`); watch for
+   0x21/0x50/0x20 replies (status 0 expected; abort is vendor-exact
+   behavior on refusal). Closes the last SC1 unknown.
+3. Offline (unblocked): ticket 09 PARTDATA grammar, 10 PRISM (its
+   handshake region 0x10004bb8c–0x10005f1e2 + BT transport angle),
+   07 block-table research.
 
 ## 8. Code map (`schuberth_dfu/`)
 
@@ -242,15 +248,18 @@ headset's main system must be powered on with a working battery…`
   `update_image(..., close="airoha"|"sc2v2"|"stage")` — "stage" =
   chunks only, no close (current SC2V2 mode); `AirohaResetError` =
   link died at commit (device applied).
-- `sc2flow.py`: `MeshLink` (B), `read_version`, `parse_container_version`,
-  `parse_submesh_image_version` ("Submesh_v0.4b4.bin"→(0,4,0,0,4)),
-  `airo_ready` (13× cmd-0x01 gate), `_reopen_mesh` (13× reopen after
-  apply-reset), **`update_sc2v2(main_handle, mesh_handle, container,
-  data, *, log, force, mesh_reopen)`** = the live flow (version skip →
-  0x0F → per block: skip-if-type3-current, 0x01(idx), 0x05, chunks
-  (stage), reopen+airo_ready per block → final 0x07+0x08 on mesh + B
-  0x08). `update_sc2` = old SC2 (0x3170) flow, untouched.
-- `sim.py`: FakeSc2V2 / FakeAiroha (sets reply length byte; handles
+- `sc2flow.py`: `MeshLink` (B transport; `bulk(..., echo=True)` = the
+  live-safe echo-matched read), `read_version`, `parse_container_version`,
+  `_stage_and_commit` (per-image 0x05[2=flag]/0x06xN/0x07),
+  `_wait_after_reboot`, **`update_sc2v2(main_handle, container, data, *,
+  log, force, reopen)`** = the LIVE-VERIFIED SC2V2 flow;
+  **`update_sc1(...)`** same signature = ticket-08 SC1-family model
+  (session preamble 0x01/0x21/0x50 best-effort → hard 0x21 → 0x20;
+  first-2-images cap; live hw test pending). `update_sc2` = old
+  unverified 0x3170 model, kept for history; `airo_ready`/
+  `find_mesh_handle` serve it.
+- `sim.py`: FakeSc2V2 / FakeSc1 (`accept_session=False` = refuses the
+  session cmds) / FakeAiroha (sets reply length byte; handles
   0x01/0x05/0x06/0x07/0x08/0x0A/0x5B) / FakeSc2 / build_container.
 - `cli.py`: subcommands detect/check/download/version/update; SC2V2
   dispatch opens RawHandle(0x3217)+RawHandle(0x3220), passes
