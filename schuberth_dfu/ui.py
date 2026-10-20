@@ -124,6 +124,11 @@ def default_update(dev: DeviceInfo, image_path: str, force: bool,
     container = parse_sena_container(data)
     if not container.verify_all(data):
         return {"ok": False, "error": "container MD5 verification failed"}
+    from .container import assert_matches_device
+    try:
+        assert_matches_device(container, dev.product_id)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
     log(f"container {container.version}: "
         + ", ".join(i.name or str(i.type) for i in container.images))
     fam = dev.family

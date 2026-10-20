@@ -132,6 +132,12 @@ def cmd_update(args) -> int:
     if not container.verify_all(data):
         print("container MD5 verification FAILED, refusing")
         return 1
+    from .container import assert_matches_device
+    try:
+        assert_matches_device(container, dev.product_id)
+    except Exception as exc:
+        print(f"{exc}")
+        return 2
     print(f"container {container.version}: "
           + ", ".join(f"{i.name or i.type}" for i in container.images))
 

@@ -106,6 +106,21 @@ def is_qcc_appu(data: bytes) -> bool:
     return QCC_MAGIC in data[:0x200]
 
 
+def assert_matches_device(container: "SENAContainer", product_id: int) -> None:
+    """Refuse to flash an image built for a different device.
+
+    The container's device_id is the USB PID the vendor pairs it with
+    (verified: SC2-v1.5 -> 0x3170, SC2-v2.4/SC2V2 -> 0x3217, SC1A ->
+    0x5622, SC1M -> 0x6400, UCOM3 -> 0x3340). Callers must treat a
+    mismatch as fatal before touching the device.
+    """
+    if container.device_id != product_id:
+        raise ContainerError(
+            f"refusing to flash: firmware image is for device "
+            f"{container.device_id:#06x} but the connected device is "
+            f"{product_id:#06x}")
+
+
 QCC_RECORD_MAGIC = b"PARTDATA"
 QCC_FOOTER_MAGIC = b"APPUPFTR"
 

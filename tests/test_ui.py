@@ -82,3 +82,15 @@ def test_update_job_lifecycle(server):
 def test_update_rejects_unsupported_pid(server):
     r = post(server, "/api/update", {"pid": "0x9999", "image": "x"})
     assert "not connected" in r["error"]
+
+
+def test_default_update_guard_refuses_wrong_device_image(tmp_path):
+    """A 0x3170 image must be refused for a 0x3217 device before any
+    USB access (device-id guard)."""
+    from schuberth_dfu.sim import build_container
+    from schuberth_dfu.ui import default_update
+    img = tmp_path / "wrong.img"
+    img.write_bytes(build_container(device_id=0x3170))
+    res = default_update(DeviceInfo(0x3217, "SC2V2", "csr"), str(img),
+                         False, lambda m: None)
+    assert res["ok"] is False and "0x3170" in res["error"]

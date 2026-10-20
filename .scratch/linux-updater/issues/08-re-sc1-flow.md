@@ -61,8 +61,9 @@ chain at 0x1000443a0–0x1000446c0 (together with 0x55xx Sena lines,
 
 **Manifest keys**: resolved live 2026-10-20 — `Firmware.txt` now carries
 versioned entries: SC1A v2.1.1 (`SC1A-v2.1.1-build2.img`), SC1S v2.1,
-SC10U v2.1, SC1M v1.1 (+ language variants). `Revisions.txt` → HTTP 403
-(gone). Container of SC1A: magic e6c52819, device_id=0x5622, count=2,
+SC10U v2.1, SC1M v1.1 (+ language variants). `Revisions` is alive too
+(`schuberth-dfu check SC1A --all-revisions` works; the "403" noted in an
+earlier comment was my own wrong manifest name). Container of SC1A: magic e6c52819, device_id=0x5622, count=2,
 flags (0,1) — matches the flow's 2-image cap exactly. SC1M also appears
 in the vendor dialog with SC2 ("Leave it powered off") — same update
 posture as SC2V2.
