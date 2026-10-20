@@ -61,6 +61,10 @@ package flows and refuses concurrent flashes; the final confirm dialog
 is the `--yes` equivalent. Its look is rebuilt with neutral inline
 assets — the vendor's proprietary icons are deliberately not shipped.
 
+![Device recognition and Firmware-Check](docs/assets/ui-device-recognition.png)
+*Demo state via `python3 tools/ui_demo.py` (simulated SC2V2 — no
+hardware touched).*
+
 Product names are the internal catalog keys (see
 `docs/analysis/pid-catalog.csv`), e.g. `SC2`, `SC2V2`, `ST1`, `PRISM`.
 

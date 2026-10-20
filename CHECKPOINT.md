@@ -8,10 +8,12 @@ is the *working* state including dead ends and the live experiment log.
 
 Reverse-engineer the SCHUBERTH Bluetooth Device Manager (Windows NSIS
 setup.exe + macOS .pkg, no Linux version) and build a Linux updater.
-The Python package `schuberth_dfu` is complete and unit-tested (52 tests
+The Python package `schuberth_dfu` is complete and unit-tested (55 tests
 pass offline) and ships a **local web UI** (`schuberth-dfu ui`) mirroring
 the vendor app's flow (recognition -> firmware-check -> precaution ->
-update with live log; verified end-to-end against the real device). **Ticket 06 is DONE: the real SC2V2 was updated
+update with live log; verified end-to-end against the real device). A
+safety guard (`container.assert_matches_device`) refuses images whose
+device_id does not match the connected PID, in CLI and UI alike. **Ticket 06 is DONE: the real SC2V2 was updated
 2.3.2.1 → 2.4.0.0 on 2026-10-19 with the vendor-exact flow** (findings.md
 "SC2V2 vendor flow — LIVE VERIFIED"). Note the earlier "power/battery
 gate" and "session handshake" model was a misread — the 0x20/0x21/0x22/
@@ -26,14 +28,14 @@ a PRISM; 07 (Airoha block table) is answered.
 
 ```bash
 cd /home/alessandro/git/reverse-engineer/schuberth-firmware-updater
-# venv (rebuild if gone): python3 -m venv /tmp/opencode/venv-schuberth
-#   /tmp/opencode/venv-schuberth/bin/pip install -e .[dev]
-# USB access: udev rule installed 2026-10-19 (see below) -> NO root needed
-# on this machine. (On a fresh machine: sudo cp udev/99-schuberth-dfu.rules
-# /etc/udev/rules.d/ && sudo udevadm control --reload, replug; or use
-# pkexec for one-off root runs — absolute paths, cwd resets.)
-/tmp/opencode/venv-schuberth/bin/schuberth-dfu version
-/tmp/opencode/venv-schuberth/bin/schuberth-dfu update --image /home/alessandro/git/reverse-engineer/schuberth-firmware-updater/firmware/sc2v2-2.4.0.0.img --yes
+# DURABLE venv (installed 2026-10-20): ~/.venvs/schuberth  (make venv)
+# /tmp/opencode/venv-schuberth also exists but /tmp gets wiped — prefer:
+~/.venvs/schuberth/bin/schuberth-dfu version
+make test          # pytest with the durable venv
+make ui            # web UI on :8737    |  make demo = simulated devices :8791
+make regression    # --force re-flash of the SC2V2 (~5 min, needs headset plugged in)
+# USB access: udev rule installed 2026-10-19 -> NO root needed. On a fresh
+# machine: `make udev` once. (pkexec still works as fallback; cwd resets.)
 ```
 
 udev rules are installed on this machine (`/etc/udev/rules.d/99-schuberth-dfu.rules`,
@@ -216,11 +218,12 @@ Live CLI on our unit now prints exactly:
 headset's main system must be powered on with a working battery…`
 
 ### Next steps (in order)
-1. Optional regression: re-run `…/schuberth-dfu update --image
-   …/firmware/sc2v2-2.4.0.0.img --yes` on the now-2.4.0.0 unit (same
-   version → should print SKIP; with --force it should re-flash cleanly).
-   Nothing else stands between us and "SC2V2 supported" — the CLI flow
-   code is what csr11 proved on hardware.
+1. **Open**: `make regression` (= packaged CLI `update --force` on the
+   SC2V2, ~5 min) — the one remaining proof that the *product code
+   path* (not just the identical replay script) can flash. Headset was
+   unplugged as of 2026-10-20 evening; plug it in and run. Expect full
+   staging of all 3 images, commits status 0, reboot, "main version
+   now: 2.4.0.0".
 2. SC1 hardware whenever available (0x5622/0x5623/0x5624 or SC1M
    0x6400): `schuberth-dfu update --image firmware/sc1a-2.1.1.img --yes`
    — the flow is the ticket-08 static model (`update_sc1`); watch for
